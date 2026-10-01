@@ -46,11 +46,11 @@ from trail.cli.command import MAGIC
 from trail.cli.console import Console
 from trail.cli.render import Renderer
 from trail.cli.theme import PROMPT, STYLE
-from trail.markers import PREMADE, Markers, premade
+from trail.markers import MARKERS, Markers, available
 from trail.trail import Trail
 
 WEBSITE: Final = "https://geojupyter.github.io/trail"
-PREMADE_NAME: Final = "default"
+DEFAULT_MARKERS: Final = "default"
 # offered by the toggle console alongside whatever is already chosen
 COMMON: Final[tuple[str, ...]] = (
     ".csv",
@@ -633,13 +633,13 @@ class Picker:
 
 
 def offer() -> list[tuple[str, Traversable]]:
-    """What the picker lists: the premade files, the default first."""
+    """What the picker lists: the markers files, the default first."""
     names = sorted(
-        premade(),
-        key=lambda name: (name != PREMADE_NAME, name),
+        available(),
+        key=lambda name: (name != DEFAULT_MARKERS, name),
     )
     out: list[tuple[str, Traversable]] = [
-        (name, PREMADE / f"{name}.markers")
+        (name, MARKERS / f"{name}.markers")
         for name in names
     ]
     return out
@@ -958,17 +958,17 @@ def init(root: Path) -> Trail:
     path = home / ".markers"
     say("Markers allow for automatic tracking of assets such as `.csv` or `.txt`. 🪧", "bold")
     hint(
-        "Scroll and press <ENTER> to select a premade marker set. 🪨",
+        "Scroll and press <ENTER> to select a marker set. 🪨",
         "Press <RIGHT> to scroll through a set's markers, and <LEFT> to return to the sets.",
         "Enter a specific path to select your own custom markers.",
-        "Press <ESCAPE> to reject premade markers.",
+        "Press <ESCAPE> to reject markers.",
         "Next, you can specify markers for specific extensions.",
     )
     say("")
     chosen = Picker(offer(), root).run()
     if chosen is None:
         lines = []
-        say("  no premade markers", "class:kind")
+        say("  no markers", "class:kind")
     else:
         lines = chosen[1]
         say(f"  markers from {chosen[0]}", "class:kind")

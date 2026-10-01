@@ -217,7 +217,7 @@ class Trail(Node):
             The markers to start a new Trail with. Ignored when the Trail already exists on file.
 
             str:
-                The name of a premade markers file, e.g. 'default'.
+                The name of a markers file, e.g. 'default'.
             Path:
                 A markers file on disk.
             None:

@@ -17,15 +17,15 @@ if TYPE_CHECKING:
 # for the gitignore syntax the file may grow into
 RESERVED: Final[frozenset[str]] = frozenset('/\\*?[]!#')
 
-# directory of the premade markers files that ship with trail
-PREMADE: Final = files('trail') / 'premade'
+# directory of the markers files that ship with trail
+MARKERS: Final = files('trail') / 'markers'
 
 
-def premade() -> list[str]:
-    """The names of the premade markers files that ship with trail, e.g. 'default'."""
+def available() -> list[str]:
+    """The names of the markers files that ship with trail, e.g. 'default'."""
     return sorted(
         entry.name.removesuffix('.markers')
-        for entry in PREMADE.iterdir()
+        for entry in MARKERS.iterdir()
         if entry.name.endswith('.markers')
     )
 
@@ -88,8 +88,8 @@ class Text(Node):
 
         markers:
             str:
-                The name of a premade markers file, e.g. 'default' copies
-                `trail/premade/default.markers`.
+                The name of a markers file, e.g. 'default' copies
+                `trail/markers/default.markers`.
             Path:
                 A markers file on disk.
         """
@@ -105,9 +105,9 @@ class Text(Node):
                 msg = f'No markers file at {source}'
                 raise FileNotFoundError(msg)
         else:
-            source = PREMADE / f'{markers}.markers'
+            source = MARKERS / f'{markers}.markers'
             if not source.is_file():
-                msg = f'No premade markers {markers!r}; available: {premade()}'
+                msg = f'No markers file {markers!r}; available: {available()}'
                 raise FileNotFoundError(msg)
         self.write(source.read_text(encoding='utf-8'))
         self.read()

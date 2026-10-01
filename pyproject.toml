@@ -28,7 +28,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-trail = ["premade/*.markers"]
+trail = ["markers/*.markers"]
 
 [dependency-groups]
 dev = [
