@@ -14,9 +14,9 @@ from trail.event import Event
 
 class Feed(Node):
     """
-    The console's scrollback. Rows arrive already rendered and are printed once; nothing
-    rewrites them afterwards. Only the last `limit` rows are kept, so a session that runs for
-    days stays bounded. `rows` holds what was printed, which is what `clear` empties.
+    The console's scrollback. Rows arrive already rendered and are printed once. They are
+    never redrawn. Only the last `limit` rows are kept in `rows`, so memory stays bounded in
+    long sessions.
     """
 
     # rows retained before the head of the feed is discarded
@@ -28,6 +28,7 @@ class Feed(Node):
 
     @cached_property
     def rows(self) -> list[StyleAndTextTuples]:
+        """Returns the rows printed so far, at most `limit` of them."""
         return []
 
     def write(
@@ -36,10 +37,14 @@ class Feed(Node):
         start: int = 0,
     ) -> None:
         """
-        Append `events`, writing a date row whenever the day changes.
+        Print `events`, with a date row whenever the day changes.
 
-        `start` is where the batch begins in the log. Records are numbered from it, so each one
-        shows the number `events` and `select` address it by, not its place in this batch.
+        `start` is the position of the first event in the log. Records are numbered from it,
+        so each one shows its position in the log rather than in this batch.
+
+        Thursday 01 October 2026
+        0. AddEntryEvent
+            id: 7960adcac6b04dbb98cf1ed8562f7d6f
         """
         rows: list[StyleAndTextTuples] = []
         for position, event in enumerate(events, start):
@@ -51,6 +56,11 @@ class Feed(Node):
         self.extend(rows)
 
     def extend(self, rows: Iterable[StyleAndTextTuples]) -> None:
+        """
+        Print `rows` and keep them, dropping the oldest rows past `limit`. Newlines inside a
+        row are replaced with spaces so each row stays on one line. Tabs are replaced with four
+        spaces.
+        """
         appended = [
             [
                 (fragment[0], fragment[1].replace("\n", " ").replace("\t", "    "))
@@ -67,11 +77,7 @@ class Feed(Node):
         self.show(appended)
 
     def show(self, rows: list[StyleAndTextTuples]) -> None:
-        """
-        Print the rows as ordinary output. Nothing redraws them afterwards, so scrollback,
-        selection and the scrollbar stay the terminal's own. That is why the console keeps off
-        the alternate screen.
-        """
+        """Print the rows as ordinary terminal output, in a single write."""
         # one write for the whole batch, since the bar below is erased and redrawn around
         # every write: a burst of events then costs one redraw rather than one per line
         fragments: StyleAndTextTuples = []
@@ -85,6 +91,7 @@ class Feed(Node):
         self.extend([row])
 
     def echo(self, text: str) -> None:
+        """Print a submitted command line with its prompt."""
         self.append([("class:echo.prompt", PROMPT), ("class:echo", text)])
 
     def info(self, text: str) -> None:
@@ -94,5 +101,6 @@ class Feed(Node):
         self.append([("class:error", text)])
 
     def clear(self) -> None:
+        """Forget the printed rows and the current date, so the next event gets a date row."""
         self.rows.clear()
         self.day = None

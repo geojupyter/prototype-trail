@@ -30,9 +30,9 @@ CLEAR = "clear"
 
 class Command(Node):
     """
-    One verb of the command bar. Every subclass adds itself to `classes` under its `name`, so
-    adding a command means writing a class and nothing else. The dispatch table, the help text
-    and the argument completion are all read back off `classes`.
+    A command in the command bar. Each subclass with a `name` registers itself in `classes`,
+    so adding a command only takes writing the class. Dispatch, `help` and completion all read
+    from `classes`.
     """
 
     _parent: Commands
@@ -51,11 +51,14 @@ class Command(Node):
         return f"{type(self).__name__}({self.name!r})"
 
     def __call__(self, arguments: Sequence[str]) -> None:
+        """Run the command with its arguments."""
         raise NotImplementedError
 
     def submit(self, text: str) -> None:
-        # what followed the command's name; a command that reads it as an expression of its own
-        # overrides this to take it unsplit
+        """
+        Split the text after the command name like a shell would, then run the command with
+        it. Listings override this to read the text unsplit.
+        """
         try:
             arguments = shlex.split(text)
         except ValueError as error:
@@ -68,7 +71,7 @@ class Command(Node):
         document: Document,
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
-        """Completions for this command's arguments; a command that takes none offers none."""
+        """Yields completions for the command's arguments. The default yields none."""
         return iter(())
 
     def display(
@@ -76,15 +79,15 @@ class Command(Node):
         path: str | Path,
         directory: bool = False,
     ) -> str:
-        """How this CLI words a path; the feed words it the same way."""
+        """Returns a path as the console shows it. Same as `Renderer.display`."""
         return self._renderer.display(path, directory)
 
     def word(self, document: Document) -> str:
-        """The argument being completed, as a document of its own for a nested completer."""
+        """Returns the word before the cursor, which is the argument being completed."""
         return document.get_word_before_cursor(WORD=True)
 
     def offer(self, word: str) -> Iterator[Completion]:
-        """Completions drawn from what is tracked rather than from the filesystem."""
+        """Yields completions from the tracked paths instead of the filesystem."""
         for entry in self._trail.entries:
             display = self.display(entry.path, isinstance(entry, Dir))
             if display.startswith(word):
@@ -92,8 +95,8 @@ class Command(Node):
 
     def entry(self, token: str) -> Entry | None:
         """
-        The tracked entry an argument names, by id or by path. A leading `#` forces the token to
-        be read as an id, for the case where a file's name would otherwise match first.
+        Returns the tracked entry an argument names, by id or by path. A leading `#` forces the
+        token to be read as an id, in case a file name would match first.
         """
         entries = self._trail.entries
         if token.startswith("#"):
@@ -109,9 +112,9 @@ class Command(Node):
         tracked: bool = False,
     ) -> list[Path]:
         """
-        Resolve a command's arguments against the project root. A token holding glob characters
-        is matched against the filesystem, or against the tracked paths when `tracked` is set,
-        which is how a resource that has already been deleted can still be named.
+        Resolve a command's arguments against the project root. A token with glob characters
+        is matched against the filesystem, or against the tracked paths when `tracked` is True.
+        Matching tracked paths lets a glob name files that were already deleted.
         """
         selected: dict[Path, None] = {}
         for token in arguments:
@@ -133,7 +136,7 @@ class Command(Node):
         return list(selected)
 
     def tracked(self, pattern: Path) -> list[Path]:
-        """The tracked paths a glob matches; `paths` uses this in place of the filesystem."""
+        """Returns the tracked paths that match a glob."""
         expanded = str(self.absolute(pattern))
         out = sorted(
             entry.path
@@ -149,9 +152,9 @@ class Command(Node):
         subject: str,
     ) -> bool:
         """
-        Whether an action that discards part of the record may go ahead. Without `-f` it reports
-        what would be lost instead of losing it. The log is append-only everywhere else, so
-        these are the only commands that can take anything back out of it.
+        Returns True if a destructive command may go ahead. Without `-f`, it prints what would
+        be discarded and returns False. Any other argument prints the usage and returns False.
+        These are the only commands that remove anything from the log.
         """
         unexpected = [
             token
@@ -167,12 +170,18 @@ class Command(Node):
         return True
 
     def absolute(self, path: Path) -> Path:
+        """Returns the path resolved against the project root."""
         if not path.is_absolute():
             path = self._console.root / path
         return path.resolve()
 
 
 class Query[T: Selectable[Any], V](Select[T, V]):
+    """
+    The Select that listings use to parse their expressions. Path values are read against the
+    project root, so a path copied from a printed record can be pasted back as it is.
+    """
+
     _parent: T
 
     def __init__(
@@ -184,9 +193,11 @@ class Query[T: Selectable[Any], V](Select[T, V]):
         self.root = root
 
     def within(self, collection: T) -> Self:
+        """Returns a Query over another collection with the same root."""
         return type(self)(collection, self.root)
 
     def comparison(self, item: str) -> T:
+        """Returns the records one term selects. Path values are resolved against the root."""
         match = self.parse(item)
         field = match["field"]
         value = match["value"]
@@ -203,9 +214,10 @@ class Query[T: Selectable[Any], V](Select[T, V]):
 
 class Listing(Command):
     """
-    A command that lists one of the Trail's collections, printing each record the way the feed
-    prints an event. A subclass only says what it lists; what follows the command's name is read
-    by the collection's Select, so a listing takes whatever `events.select(...)` takes:
+    A command that lists one of the Trail's collections. Records are printed the same way the
+    feed prints events. A subclass defines `collection` and `fields`. The text after the
+    command name is parsed by `Query`, so a listing accepts the same expressions as
+    `events.select(...)`:
 
         events                                    the last `default` records
         events :5    -5:    2:7                   a slice, counted the way Python counts
@@ -213,9 +225,8 @@ class Listing(Command):
         events src_path=a.csv or src_path=b.csv   either file's records
         events cls=WatchdogEvent not event_type=opened
 
-    A path is read against the project root, the way a listing words it, so a value copied out
-    of a printed record can be pasted straight back. When no slice says how many, only the last
-    `default` of what matched are shown.
+    Paths are read against the project root, so a path copied from a printed record can be
+    pasted back. Without a slice, only the last `default` matches are shown.
     """
 
     # the fields offered as completions; a record can be selected on any other it holds
@@ -225,6 +236,7 @@ class Listing(Command):
 
     @property
     def collection(self) -> Entries | Events:
+        """Returns the collection this command lists."""
         raise NotImplementedError
 
     def complete(
@@ -232,6 +244,7 @@ class Listing(Command):
         document: Document,
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
+        """Completes `clear` as the first word, and field names as `field=` terms."""
         word = self.word(document)
         if "=" in word:
             return
@@ -247,6 +260,15 @@ class Listing(Command):
                 yield Completion(f"{name}=", start_position=-len(stem))
 
     def submit(self, text: str) -> None:
+        """
+        Print the records the expression selects, or clear the collection if the first word is
+        `clear`.
+
+        > dirs
+        dirs (1 of 1)
+        0. Dir
+            id: 25699925cd634e51b7c3541aebd5c5f2
+        """
         # taken unsplit, since once the console's split has dropped the quotes, the parentheses
         # of a quoted path can no longer be told from the ones grouping terms
         words = text.split()
@@ -285,10 +307,7 @@ class Listing(Command):
             self._feed.extend(rows)
 
     def discard(self, arguments: Sequence[str]) -> None:
-        """
-        `clear` on a listing. The count is taken first, because afterwards there is nothing
-        left to count.
-        """
+        """Clear the listed collection. Requires `-f` to confirm."""
         collection = self.collection
         total = len(collection)
         if not total:
@@ -302,7 +321,7 @@ class Listing(Command):
 
 
 class CommandCompleter(Completer):
-    """Completes the verb at the head of the line, then hands the rest to that command."""
+    """Completes the command name, then passes the rest of the line to that command's `complete`."""
 
     def __init__(self, console: Console) -> None:
         self.console = console

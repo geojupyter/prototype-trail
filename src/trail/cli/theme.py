@@ -8,6 +8,7 @@ PROMPT: Final = "> "
 # how far a parameter line is indented under the line naming its event
 INDENT: Final = "    "
 
+# the style classes for everything the cli prints or draws
 STYLE: Final = Style.from_dict(
     {
         "header": "bg:ansibrightblack ansiwhite",
@@ -39,6 +40,7 @@ STYLE: Final = Style.from_dict(
     }
 )
 
+# the style of a record heading, keyed by the verb from `Renderer.verb`
 VERB_STYLES: Final[dict[str, str]] = {
     "tracked": "class:event.tracked",
     "offtrailed": "class:event.offtrailed",

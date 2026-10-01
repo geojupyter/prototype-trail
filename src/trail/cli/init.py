@@ -78,15 +78,26 @@ def say(
         text: str,
         style: str = "",
 ) -> None:
+    """Print one line of the walkthrough in a `STYLE` class."""
     print_formatted_text(FormattedText([(style, text)]), style=STYLE)
 
 
 def hint(*lines: str) -> None:
+    """
+    Print each line as a dim bullet under a question.
+
+      - You can always edit the `.markers` text file afterward.
+    """
     for line in lines:
         say(f"  - {line}", "class:info")
 
 
 def display(path: Path) -> str:
+    """
+    Returns a path with `~` for the home directory, and a trailing slash if it is a directory.
+
+    ~/project/
+    """
     text = Renderer.home(path)
     if path.is_dir():
         text += "/"
@@ -94,7 +105,11 @@ def display(path: Path) -> str:
 
 
 def bare(markers: Iterable[str]) -> str:
-    """Markers the way the walkthrough spells them: sorted, spaced, and without their dots."""
+    """
+    Returns the markers sorted, space-separated, and without their dots.
+
+    cpg dbf fgb geoparquet gpkg gpx kml kmz parquet prj shp shx tif tiff
+    """
     return " ".join(
         marker.removeprefix(".")
         for marker in sorted(markers)
@@ -102,7 +117,10 @@ def bare(markers: Iterable[str]) -> str:
 
 
 def marker(line: str) -> str | None:
-    """The marker a line of a markers file spells; None for a comment, a blank or a bad line."""
+    """
+    Returns the marker on one line of a markers file. Returns None for a comment, a blank line,
+    or an invalid extension.
+    """
     stripped = line.strip()
     if (
         not stripped
@@ -116,6 +134,7 @@ def marker(line: str) -> str | None:
 
 
 def parse(lines: Iterable[str]) -> set[str]:
+    """Returns the markers in the lines of a markers file."""
     out = {
         marker(line)
         for line in lines
@@ -129,9 +148,9 @@ def compose(
         markers: set[str],
 ) -> str:
     """
-    The text of a markers file holding exactly `markers`, built on `lines` so that their comments
-    and ordering survive. A line that is not a valid extension is dropped along with the markers
-    that were toggled off.
+    Returns the text of a markers file containing exactly `markers`. It starts from `lines`,
+    so comments and order are kept. Markers that were toggled off and invalid lines are
+    dropped. New markers are appended in sorted order.
     """
     kept = [
         line
@@ -153,8 +172,8 @@ def compose(
 
 class Paths(PathCompleter):
     """
-    PathCompleter, but a directory is completed through its slash, the way a shell completes
-    one. PathCompleter leaves the slash off, so what is typed next runs on into the name.
+    A PathCompleter that adds a trailing slash to directories, like a shell does. Without it,
+    the next thing typed runs into the directory name.
     """
 
     def get_completions(
@@ -175,8 +194,9 @@ class Paths(PathCompleter):
 
 def tabbing() -> KeyBindings:
     """
-    Tab takes the completion under the cursor, or the first if none is, rather than moving on to
-    the next; a directory taken then offers its own contents, the way a shell descends into one.
+    Returns key bindings that make <TAB> accept the highlighted completion, or the first one,
+    instead of cycling to the next. Accepting a directory then completes its contents, like a
+    shell.
     """
     bindings = KeyBindings()
 
@@ -198,7 +218,10 @@ def expand(
         text: str,
         root: Path,
 ) -> Path:
-    """The directory a typed path names, read from `root`; a `.trail` names its project."""
+    """
+    Returns the typed path resolved against `root`. A path to a `.trail` directory returns its
+    project directory instead.
+    """
     path = (root / Path(text.strip()).expanduser()).resolve()
     if path.name == ".trail":
         path = path.parent
@@ -209,6 +232,10 @@ def respecify(
         suggested: Path,
         root: Path,
 ) -> Path:
+    """
+    Prompt for the Trail directory, starting from `suggested`. Only directories are completed
+    and accepted. <UP> replaces the text with its parent directory.
+    """
     bindings = KeyBindings()
 
     # the arrow climbs to the parent, unless it is moving through completions
@@ -257,6 +284,14 @@ def directory(
         suggested: Path,
         root: Path,
 ) -> Path:
+    """
+    Ask whether `suggested` is the Trail directory, and prompt for another if not. Prints a
+    note when the chosen directory already has a Trail, or is inside another Trail.
+
+       >  1. Yes!!!
+          2. No, let me respecify:
+    Re-initializing the Trail at ~/project; its log is kept.
+    """
     say(f"Is {Renderer.home(suggested)} your intended Trail directory?", "bold")
     hint(
         "By default, Trail tracks any relevant assets in this directory or subdirectories.",
@@ -282,11 +317,12 @@ def directory(
 
 class Picker:
     """
-    The markers files a new `.markers` can start from, listed on the left beside a preview of
-    the one under the cursor. Right takes the arrows into the preview, where a cursor of its
-    own moves through the file's lines and the preview follows it; left gives them back to the
-    listing. Typing a path offers a file of one's own instead, and the preview follows what is
-    typed. Enter chooses whichever file the preview shows; escape turns them all down.
+    Lets the user choose the markers file a new `.markers` starts from. The bundled files are
+    listed on the left, with a preview of the selected one on the right.
+
+    <UP> and <DOWN> move through the list. <RIGHT> moves the arrows into the preview to scroll
+    the file, and <LEFT> moves them back. Typing a path previews that file instead. <ENTER>
+    chooses the previewed file, and <ESCAPE> chooses none.
     """
 
     # terminal rows left to the question and its hints above the picker
@@ -310,6 +346,10 @@ class Picker:
 
     @cached_property
     def buffer(self) -> Buffer:
+        """
+        Returns the path input below the list. Editing it clears any error and scrolls the
+        preview back to the top.
+        """
         completer = Paths(
             expanduser=True,
             get_paths=lambda: [str(self.root)],
@@ -331,7 +371,10 @@ class Picker:
 
     @property
     def custom(self) -> Path | None:
-        """The markers file the typed path names; a directory names the `.markers` inside it."""
+        """
+        Returns the markers file at the typed path, or None if there is none. A directory
+        means the `.markers` file inside it.
+        """
         try:
             path = (self.root / Path(self.typed).expanduser()).resolve()
             if path.is_dir():
@@ -344,6 +387,10 @@ class Picker:
 
     @property
     def source(self) -> Traversable | None:
+        """
+        Returns the file to preview. This is the typed path if there is one, otherwise the
+        selected file in the list.
+        """
         if self.typed:
             return self.custom
         if not self.options:
@@ -351,12 +398,14 @@ class Picker:
         return self.options[self.index][1]
 
     def move(self, step: int) -> None:
+        """Move the cursor in the preview while reading, or in the list otherwise."""
         if self.reading:
             self.browse(step)
         else:
             self.scroll(step)
 
     def scroll(self, step: int) -> None:
+        """Move the list selection by `step`, and show the new file from the top."""
         # the first press after typing gives the listing back rather than moving through it
         if self.buffer.text:
             self.buffer.text = ""
@@ -368,6 +417,7 @@ class Picker:
             self.line = 0
 
     def browse(self, step: int) -> None:
+        """Move the preview cursor by `step`, and scroll the preview to keep it in view."""
         rows = len(self._content())
         self.line = max(0, min(rows - 1, self.line + step))
         # the preview follows the cursor out of either end
@@ -378,7 +428,10 @@ class Picker:
             self.offset = self.line - viewport + 1
 
     def accept(self) -> tuple[str, list[str]] | None:
-        """The label and the lines of the file the preview shows; None, with a reason, if none."""
+        """
+        Returns the label and lines of the previewed file. Returns None and sets `error` if
+        there is no file or it cannot be read.
+        """
         source = self.source
         if source is None:
             if self.typed:
@@ -399,6 +452,10 @@ class Picker:
 
     @staticmethod
     def style(line: str) -> str:
+        """
+        Returns the style for one line of a markers file. Comments and blank lines are `info`,
+        invalid lines are `error`, and markers are `kind`.
+        """
         stripped = line.strip()
         if (
             not stripped
@@ -410,6 +467,10 @@ class Picker:
         return "class:kind"
 
     def _listing(self) -> StyleAndTextTuples:
+        """
+        Returns the list of markers files with the selected one highlighted. The highlight is
+        plain bold while reading the preview, and hidden while a path is typed.
+        """
         out: StyleAndTextTuples = []
         for index, (label, _) in enumerate(self.options):
             if index:
@@ -429,7 +490,10 @@ class Picker:
         return out
 
     def _content(self) -> list[tuple[str, str]]:
-        """The rows of the file the preview shows, as the style and the text of each."""
+        """
+        Returns the previewed file as (style, text) rows. Returns a single message row if the
+        file is missing, empty, or cannot be read.
+        """
         source = self.source
         if source is None:
             return [("class:info", "no markers file at this path")]
@@ -446,6 +510,10 @@ class Picker:
         return out
 
     def _preview(self) -> StyleAndTextTuples:
+        """
+        Returns the visible part of the preview. A rule on the left shows ↑ or ↓ when the file
+        continues above or below. While reading, the cursor line is drawn in reverse video.
+        """
         rows = self._content()
         # the cursor is drawn as wide as the longest line, so that it shows on a blank one too
         width = max(
@@ -489,7 +557,10 @@ class Picker:
 
     @cached_property
     def depth(self) -> int:
-        """The rows of the longest file offered, or of the listing if that is longer."""
+        """
+        Returns the line count of the longest bundled file, or the number of files if that is
+        larger.
+        """
         out = len(self.options)
         for _, source in self.options:
             try:
@@ -502,9 +573,9 @@ class Picker:
     @property
     def viewport(self) -> int:
         """
-        The rows given to the listing and to the preview: enough for the longest file offered, so
-        that scrolling through the listing does not resize the picker, or for a longer one typed,
-        but never more than the terminal holds below the question.
+        Returns the height of the list and the preview. It fits the longest file, so the
+        picker does not resize while scrolling. It never exceeds the terminal rows left below
+        the question.
         """
         longest = max(self.depth, len(self._content()))
         rows = get_app().output.get_size().rows
@@ -512,6 +583,10 @@ class Picker:
 
     @cached_property
     def layout(self) -> Layout:
+        """
+        Returns the picker layout. The list and the preview sit side by side, with the path
+        input and any error below them. The completion menu floats at the cursor.
+        """
         width = max(
             (
                 len(label)
@@ -564,6 +639,10 @@ class Picker:
 
     @cached_property
     def bindings(self) -> KeyBindings:
+        """
+        Returns the picker's key bindings. While the completion menu is open, <ENTER> keeps the
+        completion and <ESCAPE> reverts it. Ctrl-C and Ctrl-D abort `init`.
+        """
         bindings = KeyBindings()
         idle = ~has_completions
         empty = Condition(lambda: not self.buffer.text)
@@ -621,6 +700,12 @@ class Picker:
 
     @cached_property
     def application(self) -> Application[tuple[str, list[str]] | None]:
+        """
+        Returns the picker application. It is erased when it exits, leaving only the line
+        `init` prints about the choice.
+
+          markers from ~/Downloads/geospatial.txt
+        """
         return Application(
             layout=self.layout,
             key_bindings=merge_key_bindings([self.bindings, tabbing()]),
@@ -629,11 +714,15 @@ class Picker:
         )
 
     def run(self) -> tuple[str, list[str]] | None:
+        """
+        Run the picker. Returns the label and lines of the chosen file, or None if markers
+        were rejected.
+        """
         return self.application.run()
 
 
 def offer() -> list[tuple[str, Traversable]]:
-    """What the picker lists: the markers files, the default first."""
+    """Returns the bundled markers files for the picker, with the default first."""
     names = sorted(
         available(),
         key=lambda name: (name != DEFAULT_MARKERS, name),
@@ -647,8 +736,8 @@ def offer() -> list[tuple[str, Traversable]]:
 
 class Asked(Completer):
     """
-    Another completer, held back from an empty word unless tab asks for it. A prompt that stays
-    open is emptied by every submission, which would otherwise open the whole list each time.
+    Wraps a completer so it offers nothing for an empty word unless <TAB> is pressed. Without
+    this, every submission empties the prompt and would pop up the full list again.
     """
 
     def __init__(self, completer: Completer) -> None:
@@ -677,12 +766,13 @@ def ask(
         extra: KeyBindings | None = None,
 ) -> None:
     """
-    A prompt that stays open across submissions. Each one is handed to `submit` and the prompt
-    emptied, so that `message`, which shows what the submissions have made, is redrawn in place
-    rather than printed again. `request` asks for the next one, with the cursor on the line
-    below it. Only an empty submission closes the prompt, and it is given to `submit` as well, so
-    that notes left by the last one are cleared before `message` is printed for good. `extra`
-    is consulted before the submission on enter, so that its own bindings may claim the key.
+    Run a prompt that stays open across submissions. Each submission is passed to `submit` and
+    the prompt is cleared. `message` shows the current state and is redrawn in place. `request`
+    is the instruction shown above the cursor.
+
+    An empty submission closes the prompt. It is also passed to `submit`, so old notes are
+    cleared before `message` is printed one last time. Bindings in `extra` take priority over
+    the default <ENTER> binding.
     """
     bindings = KeyBindings()
 
@@ -723,8 +813,10 @@ def ask(
 
 def toggle(markers: set[str]) -> set[str]:
     """
-    The markers once the user is done toggling them. Each submission toggles what it names and
-    redraws the line of markers in place; only an empty submission moves on.
+    Let the user toggle markers on and off, and return the final set. Each submission toggles
+    the extensions it names. An empty submission finishes.
+
+      cpg dbf fgb geoparquet gpkg gpx kml kmz parquet prj shp shx tif tiff
     """
     out = set(markers)
     errors: list[str] = []
@@ -772,9 +864,9 @@ def resolve(
         errors: list[str],
 ) -> list[Path]:
     """
-    The paths one pasted line names, with whatever it names that does not exist added to
-    `errors`. A line naming an existing path is that path, spaces and all; anything else is
-    split the way a shell would, so `ls` output pastes as well as a list.
+    Returns the paths named on one line, and adds a message to `errors` for each one that does
+    not exist. If the whole line is an existing path, it is used as is, even with spaces.
+    Otherwise the line is split like a shell would split it, and globs are expanded.
     """
     whole = root / Path(line).expanduser()
     if whole.exists():
@@ -807,11 +899,15 @@ def gather(
         root: Path,
 ) -> list[Path]:
     """
-    The paths to track, starting from the Trail directory. Each submission adds what it names
-    and redraws the listing in place; enter submits the lines of a paste together. The arrows
-    take a cursor into the listing, where enter removes the path under it, the Trail directory
-    included; typing, escape, or moving down past the last path gives the cursor back to the
-    prompt. Only an empty submission from the prompt moves on.
+    Let the user build the list of paths to track, and return it. The list starts with the
+    Trail directory. Each submission adds the paths it names, and a multi-line paste is added
+    all at once.
+
+    <UP> moves a cursor into the list, and <ENTER> removes the path under it. Typing, <ESCAPE>,
+    or moving down past the last path returns to the prompt. An empty submission finishes.
+
+      ~/project/
+      ~/Downloads/asset.txt
     """
     metadata = home / ".trail"
     selected: dict[Path, None] = {home: None}
@@ -930,10 +1026,16 @@ def startup(trail: Trail) -> None:
 
 def init(root: Path) -> Trail:
     """
-    Walk through starting a Trail, or re-initializing one, with relative paths read from `root`.
-    Every question is asked before anything is written, so an interrupt leaves the project
-    untouched. Re-initializing rewrites the markers and adds to what is tracked, offtrailing
-    only the Trail directory if it was removed from the listing; the log is kept.
+    Walk the user through starting a Trail, or re-initializing one. Relative paths are read
+    from `root`. Nothing is written until every question is answered, so an interrupt leaves
+    the project untouched.
+
+    Re-initializing rewrites the markers and tracks any new paths. The log is kept. The Trail
+    directory is offtrailed only if it was removed from the list.
+
+    Trail started in ~/project 🌲
+      markers: cpg dbf fgb geoparquet gpkg gpx kml kmz parquet prj shp shx tif tiff
+      tracked: 2 assets, 1 dirs
     """
     existing = Trail.locate(root)
     if existing is None:

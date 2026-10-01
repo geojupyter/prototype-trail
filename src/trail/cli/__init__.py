@@ -19,6 +19,7 @@ INIT = "init"
 
 
 def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    """Parse the command line. `main` removes a leading `init` before calling this."""
     parser = argparse.ArgumentParser(
         prog="trail",
         description="Watch a project directory and record what happens to its resources.",
@@ -39,6 +40,13 @@ def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """
+    The `trail` entry point. Returns the exit code.
+
+    `trail init` runs the setup walkthrough and exits. Opening a directory that has no Trail
+    runs the walkthrough first, then opens the console. `--nodir` skips the walkthrough and
+    keeps events in memory only.
+    """
     if argv is None:
         argv = sys.argv[1:]
     argv = list(argv)
@@ -99,13 +107,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def relaunch() -> NoReturn:
     """
-    Replace this process with a fresh interpreter running the same command line, so the console
-    comes back having reimported everything.
+    Replace this process with a new interpreter running the same command line, so the console
+    reloads all of its code.
 
-    `sys.orig_argv` is the full command line, interpreter and its flags included, rather than
-    what argparse is left with. That is what lets `python -m trail` and the `trail` script
-    restart the same way. Its first token is looked up on PATH, since that is how the shell
-    found it.
+    `sys.orig_argv` holds the full original command line, including the interpreter and its
+    flags. This lets `python -m trail` and the `trail` script restart the same way. The first
+    token is looked up on PATH, as the shell did.
     """
     sys.stdout.flush()
     sys.stderr.flush()

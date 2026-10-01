@@ -12,11 +12,16 @@ if TYPE_CHECKING:
 
 
 class Node(Base):
-    """ Walks up the parent chain to the console's parts, the way the base Node walks up to the Trail. """
+    """
+    A Node inside the console. It finds the console's parts by walking up its parents, like
+    the base Node does for the Trail.
+    """
+
     _parent: Node
 
     @cached_property
     def _console(self) -> Console:
+        """The console this node belongs to."""
         from trail.cli.console import Console
 
         parent = self._parent
@@ -36,6 +41,7 @@ class Node(Base):
 
     @cached_property
     def _renderer(self) -> Renderer:
+        """The console's renderer, used to format what a node prints."""
         from trail.cli.console import Console
         from trail.cli.render import Renderer
 

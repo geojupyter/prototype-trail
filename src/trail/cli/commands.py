@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from trail.cli.console import Console
     from trail.event import Events
 
+# the key bindings listed by `help`
 KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("enter", "run the command"),
     ("tab", "complete a command or a path"),
@@ -23,6 +24,7 @@ KEYS: Final[tuple[tuple[str, str], ...]] = (
     ("ctrl-c", "quit"),
 )
 
+# printed by `help` after the key bindings, one row per line
 NOTES: Final[tuple[str, ...]] = (
     "tracking a directory tracks the directory itself: files created inside it",
     "afterwards are picked up automatically, files already inside it are not",
@@ -44,12 +46,18 @@ HELP_WIDTH: Final = 20
 
 
 class TrackCommand(Command):
+    """
+    Track each path given. Globs are expanded against the filesystem from the project root.
+    Paths that are already tracked are reported and skipped.
+    """
+
     name = "track"
     usage = "track PATH..."
     summary = "track files or directories; globs are expanded"
 
     @cached_property
     def completer(self) -> PathCompleter:
+        """Returns a path completer that reads relative paths from the project root."""
         return PathCompleter(
             expanduser=True,
             get_paths=lambda: [str(self._console.root)],
@@ -60,6 +68,10 @@ class TrackCommand(Command):
         document: Document,
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
+        """
+        Completes the word under the cursor as a path. Only that word is passed to the path
+        completer, so the command name is not read as part of the path.
+        """
         word = self.word(document)
         yield from self.completer.get_completions(
             Document(word, len(word)),
@@ -82,6 +94,11 @@ class TrackCommand(Command):
 
 
 class UntrackCommand(Command):
+    """
+    Offtrail each path given. Globs are matched against the tracked paths, not the filesystem,
+    so files that were already deleted can still be untracked.
+    """
+
     name = "untrack"
     usage = "untrack PATH..."
     summary = "stop tracking; later events for the path are ignored"
@@ -91,7 +108,7 @@ class UntrackCommand(Command):
         document: Document,
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
-        """Only a tracked path can be offtrailed, so only those are offered."""
+        """Completes only tracked paths, since only those can be untracked."""
         yield from self.offer(self.word(document))
 
     def __call__(self, arguments: Sequence[str]) -> None:
@@ -107,6 +124,8 @@ class UntrackCommand(Command):
 
 
 class AssetsCommand(Listing):
+    """List the tracked assets. DirsCommand and EntriesCommand subclass it to reuse `fields`."""
+
     name = "assets"
     usage = "assets [EXPRESSION]"
     summary = "the tracked files, sliced or filtered"
@@ -144,8 +163,9 @@ class EntriesCommand(AssetsCommand):
 
 class EventsCommand(Listing):
     """
-    `events clear` discards the log. What is tracked stays tracked for this session, but nothing
-    records it any more, so the next session opens on a project that was never told about it.
+    List the recorded events. `events clear` discards the log. Tracked entries stay tracked for
+    the rest of this session, but the next session starts with nothing tracked, because the log
+    that recorded them is gone.
     """
 
     name = "events"
@@ -169,8 +189,8 @@ class EventsCommand(Listing):
 
 class ClearCommand(Command):
     """
-    The whole project record at once: `entries clear` and `events clear` together. The record is
-    append-only otherwise, so this says what would go and waits to be told a second time.
+    Clear the whole project record, like `entries clear` followed by `events clear`. Without
+    `-f`, it only prints what would be cleared.
     """
 
     name = "clear"
@@ -193,6 +213,8 @@ class ClearCommand(Command):
 
 
 class HelpCommand(Command):
+    """Print the commands, the key bindings in `KEYS`, and the notes in `NOTES`."""
+
     name = "help"
     usage = "help"
     summary = "this list"
@@ -229,14 +251,12 @@ class HelpCommand(Command):
 
 class RestartCommand(Command):
     """
-    Reopen the project in a new interpreter, on the command line this one was given. This is
-    what picks up an edit to the console's own source: a session holds the classes it imported,
-    so a command rewritten underneath it goes on running as it was first read.
+    Reopen the project in a new interpreter with the same command line. This is how edits to
+    the console's source take effect, since a running session keeps the classes it imported.
 
-    What is recorded lives in PATH/.trail and is replayed on the way back up, so a dir-backed
-    session comes back holding what it held, minus the command history. Under `--nodir` there
-    is nothing on disk to come back to, so the log dies with the process and the restart has to
-    be confirmed like any other discard.
+    A session saved to PATH/.trail comes back with everything it recorded, but loses its
+    command history. With `--nodir`, nothing is on disk, so the log is lost and the restart
+    must be confirmed with `-f`.
     """
 
     name = "restart"
@@ -262,6 +282,8 @@ class RestartCommand(Command):
 
 
 class QuitCommand(Command):
+    """Exit the session. `main` then prints how many events were recorded."""
+
     name = "quit"
     aliases = ("exit",)
     usage = "quit"
@@ -273,15 +295,15 @@ class QuitCommand(Command):
 
 class Commands(Node):
     """
-    The command set of one Console, built from every Command subclass in `Command.classes`. It
-    lives here rather than beside the base class because it can only be assembled once all the
-    subclasses are defined.
+    The commands of one Console, built from every Command subclass in `Command.classes`. It is
+    defined in this module so that importing Commands also registers every command class.
     """
 
     _parent: Console
 
     @cached_property
     def data(self) -> dict[str, Command]:
+        """Returns each command name and alias mapped to its Command instance."""
         out: dict[str, Command] = {}
         for command_type in Command.classes.values():
             command = command_type(self)
@@ -292,7 +314,7 @@ class Commands(Node):
 
     @property
     def listed(self) -> list[Command]:
-        """The commands in definition order, each listed once however many names it answers to."""
+        """Returns each command once, in definition order, even if it has aliases."""
         return list(dict.fromkeys(self.data.values()))
 
     def __getitem__(self, key: str) -> Command:
@@ -308,6 +330,12 @@ class Commands(Node):
         return f"{type(self).__name__} ({', '.join(self.data)})"
 
     def matching(self, name: str) -> list[str]:
+        """
+        Returns the sorted command names that start with `name`.
+
+        >>> self.matching('e')
+        ['entries', 'events', 'exit']
+        """
         out = sorted(
             key
             for key in self.data
@@ -316,7 +344,10 @@ class Commands(Node):
         return out
 
     def find(self, name: str) -> Command | None:
-        """The command named exactly, or the only one that name is a prefix of."""
+        """
+        Returns the command with this exact name, or the only command it is a prefix of.
+        Returns None otherwise.
+        """
         command = self.data.get(name)
         if command is not None:
             return command
@@ -329,7 +360,7 @@ class Commands(Node):
         return None
 
     def resolve(self, name: str) -> Command | None:
-        """`find`, but reports into the feed when a name picks out no single command."""
+        """Like `find`, but prints an error to the feed when no single command matches."""
         command = self.find(name)
         if command is not None:
             return command

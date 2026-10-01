@@ -19,16 +19,16 @@ if TYPE_CHECKING:
 
 class Renderer(Node):
     """
-    Turns the Trail's objects into feed rows. The wording it picks for an event, such as the
-    verb, is presentation only. It is kept here so that the widgets do not own it and a later
-    provenance export can word the same things its own way.
-    It holds no state; the feed tracks its own date.
+    Turns the Trail's events and entries into feed rows. Wording choices such as an event's
+    verb are presentation only. They live here so a later provenance export can word the same
+    events differently. The Renderer holds no state. The feed tracks the current date itself.
     """
 
     _parent: Console
 
     @property
     def root(self) -> Path:
+        """The project root. Paths under it are shown relative to it."""
         return self._console.root
 
     @staticmethod
@@ -36,7 +36,11 @@ class Renderer(Node):
         local: datetime,
         pattern: str,
     ) -> StyleAndTextTuples:
-        """The date row the feed writes when the events it is appending cross into another day."""
+        """
+        Returns the date row printed when events cross into a new day.
+
+        Thursday 01 October 2026
+        """
         return [("class:day", f"{local:{pattern}}")]
 
     def record(
@@ -45,9 +49,14 @@ class Renderer(Node):
         position: int,
     ) -> list[StyleAndTextTuples]:
         """
-        Any object the Trail reprs, laid out the way its own repr lays it out: the class name,
-        then one line per field. Events and Entries both answer `_repr_items`, so a listing of
-        either reads like the feed, and a class that gains a field gains a line here for free.
+        Returns the rows for an event or entry, which are a heading and then one line per
+        field. Fields come from the item's `_repr_items`, so a new field on the class shows up
+        here automatically.
+
+        0. Asset
+            id: 9b0c596b228d425bbefdce16a82fe3dd
+            path: a.txt
+            st_size: 12 B
         """
         out = [self.heading(item, position)]
         out.extend(
@@ -61,6 +70,7 @@ class Renderer(Node):
         event: Event,
         position: int,
     ) -> list[StyleAndTextTuples]:
+        """Returns the rows the feed prints for an event. Same as `record`."""
         return self.record(event, position)
 
     def heading(
@@ -69,9 +79,10 @@ class Renderer(Node):
         position: int,
     ) -> StyleAndTextTuples:
         """
-        Where the record sits in the log, and its class name. The class name is coloured by what
-        happened, so a deletion reads differently from a creation without the heading spelling
-        it out; `event_type` does that exactly, one line below.
+        Returns the record's position and class name. The class name is coloured by the
+        event's verb, so a deletion and a creation look different at a glance.
+
+        4. WatchdogEvent
         """
         out: StyleAndTextTuples = [
             ("class:position", f"{position}. "),
@@ -80,13 +91,19 @@ class Renderer(Node):
         return out
 
     def style(self, item: Repr) -> str:
-        """A record is coloured by what it says happened; one that says nothing is left plain."""
+        """
+        Returns the style class for a heading. Events are coloured by their verb, or
+        `class:event` if the verb has no style. Entries use `class:kind`.
+        """
         if isinstance(item, Event):
             return VERB_STYLES.get(self.verb(item), "class:event")
         return "class:kind"
 
     def parameters(self, item: Repr) -> Iterator[tuple[str, str]]:
-        """Every field the event reprs, then the resource it was recorded against."""
+        """
+        Yields each field's name and display value. For an event, the id of the entry it was
+        recorded against comes last.
+        """
         for name, value in item._repr_items():
             yield name, self.value(name, value)
         # the repr leaves the resource out, but the stored record keeps it, and that id is the
@@ -111,12 +128,22 @@ class Renderer(Node):
         name: str,
         value: object,
     ) -> str:
-        """A field worded for a reader: a path against the project, anything else as it reprs."""
+        """
+        Returns a field value as text. Path fields go through `display`. Other values use
+        `bare_repr`.
+        """
         if name.endswith("path"):
             value = self.display(value)
         return bare_repr(value)
 
     def header(self) -> StyleAndTextTuples:
+        """
+        Returns the header row above the command bar. It shows the Trail id, the project root,
+        `(nodir)` when nothing is saved to disk, the entry and event counts, and whether the
+        watchdog is running. It is redrawn on every refresh, so the counts stay current.
+
+         trail #1ff756ca11b54b3994c7b26bbda99c0a  ~/project  assets 2  dirs 1  events 14  watching
+        """
         trail = self._trail
         if trail.watchdog.running:
             state = "watching"
@@ -143,6 +170,15 @@ class Renderer(Node):
         path: str | Path,
         directory: bool = False,
     ) -> str:
+        """
+        Returns a path as the console shows it. Paths under the root are relative to it, and
+        other paths stay absolute. A trailing slash is added when `directory` is True.
+
+        >>> self.display('/home/user/project/a.csv')
+        'a.csv'
+        >>> self.display('/home/user/Downloads/asset.txt')
+        '/home/user/Downloads/asset.txt'
+        """
         path = Path(path)
         try:
             text = str(path.relative_to(self.root))
@@ -154,6 +190,12 @@ class Renderer(Node):
 
     @staticmethod
     def verb(event: Event) -> str:
+        """
+        Returns the verb for an event, which sets its heading colour. AddEntryEvent is
+        `tracked` and RemoveEntryEvent is `offtrailed`. A WatchdogEvent uses its `event_type`,
+        except a synthetic creation, which is `discovered`. Any other event is named after its
+        class.
+        """
         if isinstance(event, AddEntryEvent):
             return "tracked"
         if isinstance(event, RemoveEntryEvent):
@@ -167,12 +209,20 @@ class Renderer(Node):
 
     @staticmethod
     def directory(event: Event) -> bool:
+        """Returns True if the event is about a directory."""
         if getattr(event, "is_directory", False):
             return True
         return isinstance(event.entry, Dir)
 
     @staticmethod
     def home(path: Path) -> str:
+        """
+        Returns the path with the home directory shortened to `~`. Paths outside the home
+        directory are returned unchanged.
+
+        >>> self.home(Path('/home/user/project'))
+        '~/project'
+        """
         try:
             return f"~/{path.relative_to(Path.home())}"
         except (RuntimeError, ValueError):
