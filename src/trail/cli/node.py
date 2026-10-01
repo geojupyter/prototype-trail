@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 class Node(Base):
     """ Walks up the parent chain to the console's parts, the way the base Node walks up to the Trail. """
+    _parent: Node
 
     @cached_property
     def _console(self) -> Console:

@@ -956,7 +956,7 @@ def init(root: Path) -> Trail:
     say("")
 
     path = home / ".markers"
-    say("Markers allow for automatic tracking of assets such as `.csv` or `.txt`. 🪧", "bold")
+    say("Markers allow for automatic tracking of files such as CSVs or text files. 🪧", "bold")
     hint(
         "Scroll and press <ENTER> to select a marker set. 🪨",
         "Press <RIGHT> to scroll through a set's markers, and <LEFT> to return to the sets.",

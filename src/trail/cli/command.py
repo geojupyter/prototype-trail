@@ -223,6 +223,7 @@ class Listing(Command):
     # records shown when the expression does not say how many
     default = 20
 
+    @property
     def collection(self) -> Entries | Events:
         raise NotImplementedError
 
@@ -255,7 +256,7 @@ class Listing(Command):
         ):
             self.discard(words[1:])
             return
-        collection = self.collection()
+        collection = self.collection
         query = Query(collection, self._console.root)
         try:
             selection = query(text)
@@ -288,7 +289,7 @@ class Listing(Command):
         `clear` on a listing. The count is taken first, because afterwards there is nothing
         left to count.
         """
-        collection = self.collection()
+        collection = self.collection
         total = len(collection)
         if not total:
             self._feed.info(f"{self.name}: already empty")

@@ -117,6 +117,7 @@ class AssetsCommand(Listing):
         "cls",
     )
 
+    @property
     def collection(self) -> Entries:
         return self._trail.assets
 
@@ -126,6 +127,7 @@ class DirsCommand(AssetsCommand):
     usage = "dirs [EXPRESSION]"
     summary = "the tracked directories, sliced or filtered"
 
+    @property
     def collection(self) -> Entries:
         return self._trail.dirs
 
@@ -135,6 +137,7 @@ class EntriesCommand(AssetsCommand):
     usage = "entries [EXPRESSION]"
     summary = "everything tracked, files and directories alike"
 
+    @property
     def collection(self) -> Entries:
         return self._trail.entries
 
@@ -159,6 +162,7 @@ class EventsCommand(Listing):
         "st_size",
     )
 
+    @property
     def collection(self) -> Events:
         return self._trail.events
 

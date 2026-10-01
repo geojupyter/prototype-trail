@@ -43,13 +43,8 @@ class Console(Node):
     """
 
     _parent: Trail
-    # seconds between checks that the observer is still alive; its death announces itself
-    # in no event, so it has to be looked for
-    heartbeat = 1.0
     # redraws arriving within this interval are coalesced into one
     interval = 0.05
-    # events from previous sessions replayed on startup
-    backlog = 20
 
     def __init__(
         self,
@@ -58,9 +53,11 @@ class Console(Node):
     ) -> None:
         Node.__init__(self, trail)
         self.root = root
-        self.cursor = 0
-        self.failed = False
         self.restarting = False
+
+    @cached_property
+    def run(self) -> Run:
+        return Run(self)
 
     @cached_property
     def feed(self) -> Feed:
@@ -88,7 +85,7 @@ class Console(Node):
             history=InMemoryHistory(),
             completer=self.completer,
             complete_while_typing=False,
-            accept_handler=self._accept,
+            accept_handler=self.run.accept,
         )
 
     @cached_property
@@ -183,102 +180,6 @@ class Console(Node):
             min_redraw_interval=self.interval,
         )
 
-    async def run(self) -> None:
-        trail = self._trail
-        application = self.application
-        self._banner()
-        self._replay()
-        # taken before the observer starts, so that nothing recorded between the replayed
-        # backlog and the first wakeup slips through the gap
-        watching = trail.events.watch()
-        async with trail.watchdog.context():
-            tasks = [
-                asyncio.create_task(self._stream(watching), name="trail-console-stream"),
-                asyncio.create_task(self._monitor(), name="trail-console-monitor"),
-            ]
-            try:
-                with patch_stdout(raw=True):
-                    await application.run_async()
-            finally:
-                for task in tasks:
-                    task.cancel()
-                for task in tasks:
-                    with suppress(asyncio.CancelledError):
-                        await task
-                await watching.aclose()
-
-    async def _stream(self, watching: AsyncIterator[Event]) -> None:
-        """
-        The watch says when to look and the cursor says what is new, so a burst of filesystem
-        events is rendered in one pass, no matter how many wakeups it arrives in.
-        """
-        async for _event in watching:
-            if self._drain():
-                self.application.invalidate()
-
-    async def _monitor(self) -> None:
-        """The watch only wakes on an event, so a dead observer would never announce itself."""
-        watchdog = self._trail.watchdog
-        while True:
-            await asyncio.sleep(self.heartbeat)
-            self._diagnose(watchdog.consumer)
-
-    def _diagnose(self, consumer: asyncio.Task[None] | None) -> None:
-        """A dead consumer takes the live feed with it, so say so rather than fall silent."""
-        if (
-            self.failed
-            or consumer is None
-            or not consumer.done()
-            or consumer.cancelled()
-        ):
-            return
-        self.failed = True
-        failure = consumer.exception()
-        if failure is not None:
-            self.feed.error(f"watchdog stopped: {failure!r}")
-            self.application.invalidate()
-
-    def _drain(self) -> bool:
-        """Write the events appended to the log since the last sweep."""
-        events = self._trail.events
-        identifiers = events.ids
-        # a cleared log leaves the cursor past the end, and anything appended afterwards would
-        # go unrendered until the log grew back to where the cursor was
-        self.cursor = min(self.cursor, len(identifiers))
-        if len(identifiers) <= self.cursor:
-            return False
-        start = self.cursor
-        pending = [
-            events[identifier]
-            for identifier in identifiers[start:]
-        ]
-        self.cursor = len(identifiers)
-        self.feed.write(pending, start)
-        return True
-
-    def _banner(self) -> None:
-        trail = self._trail
-        renderer = self.renderer
-        self.feed.info(f"trail #{trail.id} on {renderer.home(self.root)}")
-        if trail.dir is None:
-            self.feed.info("nodir: events are held in memory and discarded on exit")
-        else:
-            self.feed.info(f"recording to {renderer.home(trail.dir)}")
-        self.feed.info("nothing is tracked until you track it; 'help' lists the commands")
-
-    def _replay(self) -> None:
-        """Render the tail of a previous session's log before the live feed takes over."""
-        identifiers = self._trail.events.ids
-        hidden = len(identifiers) - self.backlog
-        if hidden > 0:
-            self.feed.info(f"... {hidden} earlier events")
-            self.cursor = hidden
-        self._drain()
-
-    def _accept(self, buffer: Buffer) -> bool:
-        self.submit(buffer.text)
-        return False
-
     def submit(self, line: str) -> None:
         text = line.strip()
         if not text:
@@ -292,4 +193,119 @@ class Console(Node):
                 command.submit(text[len(name):].lstrip())
             except Exception as error:  # noqa: BLE001
                 self.feed.error(f"{type(error).__name__}: {error}")
-        self._drain()
+        self.run.drain()
+
+
+class Run(Node):
+    """
+    The console's live session: the event log streamed into the feed while the application
+    runs, and the watchdog checked for a silent death.
+    """
+
+    _parent: Console
+    # seconds between checks that the observer is still alive; its death announces itself
+    # in no event, so it has to be looked for
+    heartbeat = 1.0
+    # events from previous sessions replayed on startup
+    backlog = 20
+    # how far into the event log the feed has written
+    cursor = 0
+    # whether the watchdog's death has already been reported
+    failed = False
+
+    async def __call__(self) -> None:
+        """Run the application until it exits, streaming new events into the feed meanwhile."""
+        trail = self._trail
+        application = self._console.application
+        self.banner()
+        self.replay()
+        # taken before the observer starts, so that nothing recorded between the replayed
+        # backlog and the first wakeup slips through the gap
+        watching = trail.events.watch()
+        async with trail.watchdog.context():
+            tasks = [
+                asyncio.create_task(self.stream(watching), name="trail-console-stream"),
+                asyncio.create_task(self.monitor(), name="trail-console-monitor"),
+            ]
+            try:
+                with patch_stdout(raw=True):
+                    await application.run_async()
+            finally:
+                for task in tasks:
+                    task.cancel()
+                for task in tasks:
+                    with suppress(asyncio.CancelledError):
+                        await task
+                await watching.aclose()
+
+    async def stream(self, watching: AsyncIterator[Event]) -> None:
+        """Write new events to the feed each time the watch wakes."""
+        async for _event in watching:
+            if self.drain():
+                self._console.application.invalidate()
+
+    async def monitor(self) -> None:
+        """Check every `heartbeat` seconds whether the watchdog has died."""
+        watchdog = self._trail.watchdog
+        while True:
+            await asyncio.sleep(self.heartbeat)
+            self.diagnose(watchdog.consumer)
+
+    def diagnose(self, consumer: asyncio.Task[None] | None) -> None:
+        """Report in the feed, once, that the watchdog's consumer died with an error."""
+        if (
+            self.failed
+            or consumer is None
+            or not consumer.done()
+            or consumer.cancelled()
+        ):
+            return
+        self.failed = True
+        failure = consumer.exception()
+        if failure is not None:
+            self._feed.error(f"watchdog stopped: {failure!r}")
+            self._console.application.invalidate()
+
+    def drain(self) -> bool:
+        """Write the events logged since the last drain; return whether there were any."""
+        events = self._trail.events
+        identifiers = events.ids
+        # a cleared log leaves the cursor past the end, and anything appended afterwards would
+        # go unrendered until the log grew back to where the cursor was
+        self.cursor = min(self.cursor, len(identifiers))
+        if len(identifiers) <= self.cursor:
+            return False
+        start = self.cursor
+        pending = [
+            events[identifier]
+            for identifier in identifiers[start:]
+        ]
+        self.cursor = len(identifiers)
+        self._feed.write(pending, start)
+        return True
+
+    def banner(self) -> None:
+        """Write which project is open, where it records to, and how to get started."""
+        trail = self._trail
+        renderer = self._renderer
+        feed = self._feed
+        feed.info(f"trail #{trail.id} on {renderer.home(self._console.root)}")
+        if trail.dir is None:
+            feed.info("nodir: events are held in memory and discarded on exit")
+        else:
+            feed.info(f"recording to {renderer.home(trail.dir)}")
+        feed.info("nothing is tracked until you track it; 'help' lists the commands")
+
+    def replay(self) -> None:
+        """Write the last `backlog` events already in the log."""
+        identifiers = self._trail.events.ids
+        hidden = len(identifiers) - self.backlog
+        if hidden > 0:
+            self._feed.info(f"... {hidden} earlier events")
+            self.cursor = hidden
+        self.drain()
+
+    def accept(self, buffer: Buffer) -> bool:
+        """Submit the command bar's line; returning False empties the bar."""
+        self._console.submit(buffer.text)
+        return False
