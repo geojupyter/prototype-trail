@@ -1,0 +1,48 @@
+[project]
+name = "trail"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.12"
+dependencies = [
+    "ipykernel>=7.3.0",
+    "prompt_toolkit>=3.0",
+    "watchdog>=6.0",
+]
+authors = [
+    { name = "Maryam Hosseini", email = "maryamh@berkeley.edu" },
+    { name = "Matt Fisher", email="mfisher87@gmail.com"}
+]
+maintainers = [
+    { name = "Daniel Hodczak", email = "dhodcz2@uic.edu" }
+]
+
+
+[project.scripts]
+trail = "trail.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = [
+    "trail",
+    "trail.*",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "ruff>=0.16.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+# `ruff format` is deliberately absent from the pre-commit hooks. It is Black-derived and
+# collapses any comprehension or multi-line expression that fits within line-length onto a
+# single line, which this codebase expands on purpose. Ruff exposes no option to preserve
+# intentional line breaks, so the formatter is not run at all; `ruff check` is.
+[tool.ruff.lint]
+extend-select = [
+    "I",
+    "UP",
+]
