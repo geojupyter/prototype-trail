@@ -28,7 +28,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-trail = ["markers/*.markers"]
+trail = ["markers/*.txt"]
 
 [dependency-groups]
 dev = [

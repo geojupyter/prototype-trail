@@ -639,7 +639,7 @@ def offer() -> list[tuple[str, Traversable]]:
         key=lambda name: (name != DEFAULT_MARKERS, name),
     )
     out: list[tuple[str, Traversable]] = [
-        (name, MARKERS / f"{name}.markers")
+        (name, MARKERS / f"{name}.txt")
         for name in names
     ]
     return out

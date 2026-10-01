@@ -24,9 +24,9 @@ MARKERS: Final = files('trail') / 'markers'
 def available() -> list[str]:
     """The names of the markers files that ship with trail, e.g. 'default'."""
     return sorted(
-        entry.name.removesuffix('.markers')
+        entry.name.removesuffix('.txt')
         for entry in MARKERS.iterdir()
-        if entry.name.endswith('.markers')
+        if entry.name.endswith('.txt')
     )
 
 
@@ -89,7 +89,7 @@ class Text(Node):
         markers:
             str:
                 The name of a markers file, e.g. 'default' copies
-                `trail/markers/default.markers`.
+                `trail/markers/default.txt`.
             Path:
                 A markers file on disk.
         """
@@ -105,7 +105,7 @@ class Text(Node):
                 msg = f'No markers file at {source}'
                 raise FileNotFoundError(msg)
         else:
-            source = MARKERS / f'{markers}.markers'
+            source = MARKERS / f'{markers}.txt'
             if not source.is_file():
                 msg = f'No markers file {markers!r}; available: {available()}'
                 raise FileNotFoundError(msg)
