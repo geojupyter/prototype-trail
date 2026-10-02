@@ -81,8 +81,8 @@ class Feed(Node):
         # one write for the whole batch, since the bar below is erased and redrawn around
         # every write: a burst of events then costs one redraw rather than one per line
         fragments: StyleAndTextTuples = []
-        for row in rows:
-            if fragments:
+        for index, row in enumerate(rows):
+            if index:
                 fragments.append(("", "\n"))
             fragments.extend(row)
         print_formatted_text(FormattedText(fragments), style=STYLE)
@@ -93,6 +93,9 @@ class Feed(Node):
     def echo(self, text: str) -> None:
         """Print a submitted command line with its prompt."""
         self.append([("class:echo.prompt", PROMPT), ("class:echo", text)])
+
+    def blank(self) -> None:
+        self.append([])
 
     def info(self, text: str) -> None:
         self.append([("class:info", text)])

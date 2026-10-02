@@ -19,7 +19,7 @@ Demonstrate this complete workflow on a small toy project:
 5. Report what changed and identify the affected resource by its stable resource ID.
 
 ### Definition of done
-
+rst
 - A project receives one persistent project ID at initialization.
 - Each registered resource receives a persistent project-local ID independent of its path or filename.
 - Resource registration records at least the path, size, and modification time.

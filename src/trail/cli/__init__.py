@@ -76,6 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not sys.stdin.isatty():
         print("trail: the console needs an interactive terminal", file=sys.stderr)
         return 2
+    returning = False
     if arguments.nodir:
         trail = Trail()
     elif (
@@ -91,7 +92,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
     else:
         trail = Trail(root)
-    console = Console(trail, root)
+        returning = True
+    console = Console(trail, root, returning)
     try:
         asyncio.run(console.run())
     except KeyboardInterrupt:

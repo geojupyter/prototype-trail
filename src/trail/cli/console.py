@@ -50,22 +50,28 @@ class Console(Node):
         self,
         trail: Trail,
         root: Path,
+        returning: bool = False,
     ) -> None:
         Node.__init__(self, trail)
         self.root = root
+        # whether the Trail existed before this session, so the banner welcomes the user back
+        self.returning = returning
         self.restarting = False
 
     @cached_property
     def run(self) -> Run:
         """
-        Returns a Run instance, which runs the live session. It prints the banner and the last
-        `backlog` events, then prints new events as the watchdog records them until the
-        application exits. Lines submitted in the command bar also go through it.
+        Returns a Run instance, which runs the live session. It prints the banner, then prints
+        new events as the watchdog records them until the application exits. Events from earlier
+        sessions are not printed. `events` lists them. Lines submitted in the command bar also
+        go through it.
 
         $ trail
+        🍃🍄🌲 Welcome back to Trail! 🌲🍄🍃
+
         trail #1ff756ca11b54b3994c7b26bbda99c0a on ~/project
-        recording to ~/project/.trail
-        nothing is tracked until you track it; 'help' lists the commands
+        assets 2  dirs 1  events 14
+        type 'help' for help
         """
         return Run(self)
 
@@ -284,8 +290,6 @@ class Run(Node):
     # seconds between checks that the observer is still alive; its death announces itself
     # in no event, so it has to be looked for
     heartbeat = 1.0
-    # events from previous sessions replayed on startup
-    backlog = 20
     # how far into the event log the feed has written
     cursor = 0
     # whether the watchdog's death has already been reported
@@ -294,14 +298,15 @@ class Run(Node):
     async def __call__(self) -> None:
         """
         Run the application until it exits, printing new events to the feed as they arrive.
-        See `banner`, `replay` and `stream` for what is printed.
+        See `banner` and `stream` for what is printed.
         """
         trail = self._trail
         application = self._console.application
         self.banner()
-        self.replay()
-        # taken before the observer starts, so that nothing recorded between the replayed
-        # backlog and the first wakeup slips through the gap
+        # the events already logged belong to earlier sessions, so the feed starts after them
+        self.cursor = len(trail.events.ids)
+        # taken before the observer starts, so that nothing recorded between the banner and
+        # the first wakeup slips through the gap
         watching = trail.events.watch()
         async with trail.watchdog.context():
             tasks = [
@@ -385,39 +390,31 @@ class Run(Node):
 
     def banner(self) -> None:
         """
-        Print the Trail id, the project root, where events are saved, and a usage hint. With
-        `--nodir`, the second line says events are held in memory instead.
+        Print the welcome, the Trail id, the project root, the entry and event counts, and a
+        usage hint. Blank lines set the welcome apart and separate the banner from the events
+        printed after it. With `--nodir`, a line after the root says events are held in memory.
+
+        🍃🍄🌲 Welcome back to Trail! 🌲🍄🍃
 
         trail #1ff756ca11b54b3994c7b26bbda99c0a on ~/project
-        recording to ~/project/.trail
-        nothing is tracked until you track it; 'help' lists the commands
+        assets 2  dirs 1  events 14
+        type 'help' for help
         """
         trail = self._trail
         renderer = self._renderer
         feed = self._feed
+        feed.append(renderer.welcome(self._console.returning))
+        feed.blank()
         feed.info(f"trail #{trail.id} on {renderer.home(self._console.root)}")
         if trail.dir is None:
             feed.info("nodir: events are held in memory and discarded on exit")
-        else:
-            feed.info(f"recording to {renderer.home(trail.dir)}")
-        feed.info("nothing is tracked until you track it; 'help' lists the commands")
-
-    def replay(self) -> None:
-        """
-        Print the last `backlog` events already in the log at startup. If the log holds more,
-        `... N earlier events` is printed first.
-
-        Thursday 01 October 2026
-        0. AddEntryEvent
-            id: 7960adcac6b04dbb98cf1ed8562f7d6f
-            timestamp: 19:26:04.997
-        """
-        identifiers = self._trail.events.ids
-        hidden = len(identifiers) - self.backlog
-        if hidden > 0:
-            self._feed.info(f"... {hidden} earlier events")
-            self.cursor = hidden
-        self.drain()
+        feed.info(
+            f"assets {len(trail.assets)}"
+            f"  dirs {len(trail.dirs)}"
+            f"  events {len(trail.events)}"
+        )
+        feed.info("type 'help' for help")
+        feed.blank()
 
     def accept(self, buffer: Buffer) -> bool:
         """Submit the command bar's line. Returning False tells prompt_toolkit to clear the bar."""

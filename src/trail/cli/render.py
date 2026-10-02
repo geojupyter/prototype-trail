@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import TYPE_CHECKING
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 
 from trail.cli.node import Node
-from trail.cli.theme import INDENT, VERB_STYLES
+from trail.cli.theme import EMBLEM_GLYPHS, INDENT, VERB_STYLES
 from trail.dir import Dir
 from trail.event import AddEntryEvent, Event, RemoveEntryEvent, WatchdogEvent
 from trail.util import Repr, bare_repr
@@ -25,6 +26,8 @@ class Renderer(Node):
     """
 
     _parent: Console
+    # glyphs on each side of the welcome
+    emblem_length = 3
 
     @property
     def root(self) -> Path:
@@ -135,6 +138,38 @@ class Renderer(Node):
         if name.endswith("path"):
             value = self.display(value)
         return bare_repr(value)
+
+    def emblem(self) -> list[str]:
+        """
+        Returns `emblem_length` glyphs picked by the Trail id. The same Trail always gets the
+        same glyphs in the same order. Two Trails can share an emblem, but it is unlikely.
+        """
+        # the builtin hash is salted per process, so it would pick new glyphs every session
+        digest = hashlib.sha256(self._trail.id.encode()).digest()
+        return [
+            EMBLEM_GLYPHS[byte % len(EMBLEM_GLYPHS)]
+            for byte in digest[:self.emblem_length]
+        ]
+
+    def welcome(self, returning: bool) -> StyleAndTextTuples:
+        """
+        Returns the welcome row printed at the top of the banner. The emblem is on the left and
+        its mirror image is on the right. A returning session is welcomed back.
+
+        🍃🍄🌲 Welcome back to Trail! 🌲🍄🍃
+        """
+        emblem = self.emblem()
+        if returning:
+            text = "Welcome back to Trail!"
+        else:
+            text = "Welcome to Trail!"
+        left = "".join(emblem)
+        right = "".join(reversed(emblem))
+        return [
+            ("", f"{left} "),
+            ("class:welcome", text),
+            ("", f" {right}"),
+        ]
 
     def header(self) -> StyleAndTextTuples:
         """

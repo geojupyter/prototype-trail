@@ -11,6 +11,7 @@ INDENT: Final = "    "
 # the style classes for everything the cli prints or draws
 STYLE: Final = Style.from_dict(
     {
+        "welcome": "bold",
         "header": "bg:ansibrightblack ansiwhite",
         "header.name": "bold",
         "header.id": "ansibrightcyan",
@@ -51,3 +52,25 @@ VERB_STYLES: Final[dict[str, str]] = {
     "moved": "class:event.moved",
     "opened": "class:event.opened",
 }
+
+# the glyphs an emblem is drawn from. ⛰️ 🏔️ 🏕️ end in an invisible VS16. ZWJ sequences
+# such as the brown mushroom are left out, since terminals that do not join them show the
+# parts side by side
+EMBLEM_GLYPHS: Final = (
+    "⛰️",
+    "🌳",
+    "🌿",
+    "🌲",
+    "🍃",
+    "🍂",
+    "🪵",
+    "🏔️",
+    "🌱",
+    "🏕️",
+    "🪻",
+    "🌺",
+    "🍁",
+    "🌼",
+    "🌵",
+    "🍄",
+)
