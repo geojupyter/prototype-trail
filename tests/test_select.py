@@ -25,14 +25,14 @@ class TestSelect:
             root = Path(temporary).resolve()
             for name, size in (("a.csv", 1), ("b.csv", 10), ("c.csv", 100)):
                 (root / name).write_text("x" * size, encoding="utf-8")
-            trail = Trail(root)
+            trail = Trail(root, tracked=False)
             trail.track(root / "a.csv")
             trail.track(root / "b.csv")
             trail.track(root / "c.csv")
             trail.offtrail(root / "a.csv")
             trail.track(root / "a.csv")
             start = datetime.now(UTC).replace(hour=10, minute=0, second=0, microsecond=0)
-            for position, event in enumerate(trail.events.values()):
+            for position, event in enumerate(trail.events):
                 event.timestamp = start + timedelta(minutes=position)
             yield trail, root
 
@@ -214,14 +214,14 @@ class TestSelect:
             c = assets[root / "c.csv"]
             selection = assets.select(f"id={b.id}")
             assert type(selection) is type(assets)
-            assert list(selection.values()) == [b]
-            assert list(assets.select(f"path={root / 'b.csv'}").values()) == [b]
+            assert list(selection) == [b]
+            assert list(assets.select(f"path={root / 'b.csv'}")) == [b]
             # an entry's path is a Path, so a relative one is resolved before it is compared
             with chdir(root):
-                assert list(assets.select("path=b.csv").values()) == [b]
-            assert list(assets.select("name=c.csv or name=b.csv").values()) == [b, c]
+                assert list(assets.select("path=b.csv")) == [b]
+            assert list(assets.select("name=c.csv or name=b.csv")) == [b, c]
             assert assets.select[0] is b
-            assert list(assets.select[-1:].values()) == [assets[root / "a.csv"]]
+            assert list(assets.select[-1:]) == [assets[root / "a.csv"]]
 
     def test_changing_an_entries_selection_leaves_the_collection_alone(self) -> None:
         with self.session() as (trail, root):
