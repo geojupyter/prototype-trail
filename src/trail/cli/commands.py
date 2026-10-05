@@ -4,14 +4,16 @@ from collections.abc import Iterator, Sequence
 from functools import cached_property
 from typing import TYPE_CHECKING, ClassVar, Final
 
-from prompt_toolkit.completion import CompleteEvent, Completion, PathCompleter
+from prompt_toolkit.completion import CompleteEvent, Completer, Completion, PathCompleter
 from prompt_toolkit.document import Document
 
 from trail.cli.command import FORCE, Command, Listing
 from trail.cli.node import Node
-from trail.entry import Entries
+from trail.cli.scopes import completer
+from trail.markers import kind, parse
 
 if TYPE_CHECKING:
+    from trail.asset import Assets
     from trail.cli.console import Console
     from trail.event import Events
 
@@ -26,8 +28,11 @@ KEYS: Final[tuple[tuple[str, str], ...]] = (
 
 # printed by `help` after the key bindings, one row per line
 NOTES: Final[tuple[str, ...]] = (
-    "tracking a directory tracks the directory itself: files created inside it",
-    "afterwards are picked up automatically, files already inside it are not",
+    "'track data/*.csv' tracks the csv files in data now, while 'mark data/*.csv' adds the",
+    "line to .markers, so the csv files written there later are tracked as well",
+    "tracking a directory tracks it whole, as one asset; 'mark data/' watches it instead,",
+    "so the files in it that the extensions in .markers name are tracked one by one",
+    "'unmark' only edits .markers: what a line already tracked stays tracked until offtrailed",
     "the feed is ordinary output, so scrolling, selecting and copying are the",
     "terminal's own and work as they do anywhere else",
     "a listing reads what follows it as a selection: every term names its field, terms",
@@ -47,13 +52,14 @@ HELP_WIDTH: Final = 20
 
 class TrackCommand(Command):
     """
-    Track each path given. Globs are expanded against the filesystem from the project root.
-    Paths that are already tracked are reported and skipped.
+    Track each path given, now. Globs are expanded against the filesystem from the project
+    root. Paths that are already tracked are reported and skipped. A directory is tracked
+    whole, as one asset. `mark` is the command for files that do not exist yet.
     """
 
     name = "track"
     usage = "track PATH..."
-    summary = "track files or directories; globs are expanded"
+    summary = "track files or directories now; globs are expanded"
 
     @cached_property
     def completer(self) -> PathCompleter:
@@ -79,12 +85,13 @@ class TrackCommand(Command):
         )
 
     def __call__(self, arguments: Sequence[str]) -> None:
+        """Track each path, skipping the ones already tracked. Errors are printed to the feed."""
         if not arguments:
             self._feed.error(f"usage: {self.usage}")
             return
         trail = self._trail
         for path in self.paths(arguments):
-            if path in trail.entries:
+            if path in trail.assets:
                 self._feed.info(f"already tracked: {self.display(path)}")
                 continue
             try:
@@ -93,14 +100,15 @@ class TrackCommand(Command):
                 self._feed.error(f"{self.display(path)}: {error}")
 
 
-class UntrackCommand(Command):
+class OfftrailCommand(Command):
     """
     Offtrail each path given. Globs are matched against the tracked paths, not the filesystem,
-    so files that were already deleted can still be untracked.
+    so files that were already deleted can still be offtrailed. `.markers` is not edited, so a
+    file a line marks stays offtrailed rather than being picked up again.
     """
 
-    name = "untrack"
-    usage = "untrack PATH..."
+    name = "offtrail"
+    usage = "offtrail PATH..."
     summary = "stop tracking; later events for the path are ignored"
 
     def complete(
@@ -108,23 +116,177 @@ class UntrackCommand(Command):
         document: Document,
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
-        """Completes only tracked paths, since only those can be untracked."""
+        """Completes only tracked paths, since only those can be offtrailed."""
         yield from self.offer(self.word(document))
 
     def __call__(self, arguments: Sequence[str]) -> None:
+        """Offtrail each tracked path the arguments name, and report the ones not tracked."""
         if not arguments:
             self._feed.error(f"usage: {self.usage}")
             return
         trail = self._trail
         for path in self.paths(arguments, tracked=True):
-            if path not in trail.entries:
+            if path not in trail.assets:
                 self._feed.error(f"not tracked: {self.display(path)}")
                 continue
             trail.offtrail(path)
 
 
+class MarkCommand(Command):
+    """
+    Add a line to `.markers` for each pattern, then track the files it matches now. Files that
+    match it later are tracked when they appear. `csv` and `.csv` add `*.csv`, and a directory
+    adds its line with the trailing `/`.
+
+    > mark tsv
+    marked *.tsv (root scope); tracked 1 now
+    """
+
+    name = "mark"
+    usage = "mark PATTERN..."
+    summary = "add lines to .markers; matching files are tracked now and from now on"
+
+    @cached_property
+    def completer(self) -> Completer:
+        """Returns the completer for lines of `.markers`, the one `init` uses as well."""
+        trail = self._trail
+        return completer(
+            lambda: trail.markers,
+            lambda: trail.markers.project,
+            lambda: self._console.root,
+        )
+
+    def complete(
+        self,
+        document: Document,
+        complete_event: CompleteEvent,
+    ) -> Iterator[Completion]:
+        """Completes paths, extensions as `*.ext`, and the lines already in `.markers`."""
+        yield from self.completer.get_completions(document, complete_event)
+
+    def __call__(self, arguments: Sequence[str]) -> None:
+        """
+        Mark each pattern. Prints the line it added and its kind, and how many files the scan
+        that followed tracked.
+        """
+        if not arguments:
+            self._feed.error(f"usage: {self.usage}")
+            return
+        trail = self._trail
+        project = trail.markers.project
+        for text in arguments:
+            before = len(trail.assets)
+            try:
+                added = trail.mark(text, cwd=self._console.root)
+            except (OSError, ValueError) as error:
+                self._feed.error(f"{text}: {error}")
+                continue
+            if not added:
+                self._feed.info(f"already marked: {text}")
+                continue
+            line = added[0]
+            tracked = len(trail.assets) - before
+            self._feed.info(f"marked {line} ({kind(line, project)}); tracked {tracked} now")
+
+
+class UnmarkCommand(MarkCommand):
+    """
+    Remove the lines of `.markers` each pattern stands for. Files they matched stay tracked,
+    and the feed says how many. `offtrail` removes them.
+
+    > unmark .tsv
+    unmarked *.tsv
+    1 assets matched by '*.tsv' remain tracked; offtrail removes them
+    """
+
+    name = "unmark"
+    usage = "unmark PATTERN..."
+    summary = "remove lines from .markers; what they tracked stays tracked"
+
+    def __call__(self, arguments: Sequence[str]) -> None:
+        """
+        Unmark each pattern and print the lines removed. `Console.submit` prints the warning
+        about what stays tracked.
+        """
+        if not arguments:
+            self._feed.error(f"usage: {self.usage}")
+            return
+        trail = self._trail
+        for text in arguments:
+            try:
+                removed = trail.unmark(text, cwd=self._console.root)
+            except (OSError, ValueError) as error:
+                self._feed.error(f"{text}: {error}")
+                continue
+            if not removed:
+                self._feed.error(f"not marked: {text}")
+                continue
+            for line in removed:
+                self._feed.info(f"unmarked {line}")
+
+
+class MarkersCommand(Command):
+    """
+    List the lines of `.markers`, each with its kind and the Dir it belongs to, then any
+    warnings about them.
+
+    > markers
+      ./          root                        ./
+      *.csv       root scope                  every root
+      data/*.png  dir scope · not subfolders  data/
+    """
+
+    name = "markers"
+    usage = "markers"
+    summary = "the lines of .markers, their kinds and the Dirs they belong to"
+
+    def __call__(self, arguments: Sequence[str]) -> None:
+        """Print a row for each line of `.markers`, then the warnings about them."""
+        trail = self._trail
+        markers = trail.markers
+        if not markers:
+            self._feed.info("markers: none; 'mark' adds one")
+        project = markers.project
+        rows = []
+        for line in markers:
+            try:
+                base, _ = parse(line, project)
+            except ValueError:
+                owner = ""
+            else:
+                if base is None:
+                    owner = "every root"
+                elif base == project:
+                    owner = "./"
+                else:
+                    owner = self.display(base, directory=True)
+            rows.append((line, kind(line, project), owner))
+        width = max(
+            (len(line) for line, _, _ in rows),
+            default=0,
+        )
+        kinds = max(
+            (len(described) for _, described, _ in rows),
+            default=0,
+        )
+        for line, described, owner in rows:
+            if described == "invalid":
+                style = "class:error"
+            else:
+                style = "class:kind"
+            self._feed.append(
+                [
+                    (style, f"  {line:<{width}}  "),
+                    ("class:info", f"{described:<{kinds}}  "),
+                    ("", owner),
+                ]
+            )
+        for warning in markers.warnings:
+            self._feed.error(warning)
+
+
 class AssetsCommand(Listing):
-    """List the tracked assets. DirsCommand and EntriesCommand subclass it to reuse `fields`."""
+    """List the tracked assets, files and directories alike."""
 
     name = "assets"
     usage = "assets [EXPRESSION]"
@@ -137,35 +299,45 @@ class AssetsCommand(Listing):
     )
 
     @property
-    def collection(self) -> Entries:
+    def collection(self) -> Assets:
+        """Returns the Trail's assets."""
         return self._trail.assets
 
 
-class DirsCommand(AssetsCommand):
+class DirsCommand(Command):
+    """
+    Print the directories `.markers` names. A Dir has no id and is not in the log, so it is
+    printed whole rather than selected from.
+
+    > dirs
+    Dirs (2)
+        0. Dir
+            path: /tmp/tmpp_bl05lq
+            root: True
+            scopes: []
+        1. Dir
+            path: /tmp/tmpp_bl05lq/data
+            root: False
+            scopes: [
+                ./*.png,
+            ]
+    """
+
     name = "dirs"
-    usage = "dirs [EXPRESSION]"
-    summary = "the tracked directories, sliced or filtered"
+    usage = "dirs"
+    summary = "the directories .markers names, with their scopes"
 
-    @property
-    def collection(self) -> Entries:
-        return self._trail.dirs
-
-
-class EntriesCommand(AssetsCommand):
-    name = "entries"
-    usage = "entries [EXPRESSION]"
-    summary = "everything tracked, files and directories alike"
-
-    @property
-    def collection(self) -> Entries:
-        return self._trail.entries
+    def __call__(self, arguments: Sequence[str]) -> None:
+        """Print `repr(trail.dirs)` to the feed."""
+        for line in repr(self._trail.dirs).splitlines():
+            self._feed.append([("", line)])
 
 
 class EventsCommand(Listing):
     """
-    List the recorded events. `events clear` discards the log. Tracked entries stay tracked for
-    the rest of this session, but the next session starts with nothing tracked, because the log
-    that recorded them is gone.
+    List the recorded events. `events clear` discards the log. Tracked assets stay tracked for
+    the rest of this session, but the next session starts with only what `.markers` picks up
+    again, because the log that recorded the rest is gone.
     """
 
     name = "events"
@@ -173,12 +345,13 @@ class EventsCommand(Listing):
     summary = "the recorded events, sliced or filtered"
     fields: ClassVar[tuple[str, ...]] = (
         "id",
-        "entry",
+        "asset",
         "cls",
         "timestamp",
         "src_path",
         "dest_path",
         "event_type",
+        "rule",
         "st_size",
     )
 
@@ -189,8 +362,8 @@ class EventsCommand(Listing):
 
 class ClearCommand(Command):
     """
-    Clear the whole project record, like `entries clear` followed by `events clear`. Without
-    `-f`, it only prints what would be cleared.
+    Clear the whole project record, like `assets clear` followed by `events clear`. Without
+    `-f`, it only prints what would be cleared. `.markers` is left as it is.
     """
 
     name = "clear"
@@ -198,18 +371,19 @@ class ClearCommand(Command):
     summary = "discard the project record: offtrail everything, then empty the log"
 
     def __call__(self, arguments: Sequence[str]) -> None:
+        """Offtrail every asset and empty the log, once `-f` confirms it."""
         trail = self._trail
         events = len(trail.events)
-        entries = len(trail.entries)
-        if not events and not entries:
+        assets = len(trail.assets)
+        if not events and not assets:
             self._feed.info("clear: the project record is already empty")
             return
         # counted the way the header counts them, which is the way they are addressed
-        subject = f"clear: this clears entries {entries}, events {events}"
+        subject = f"clear: this clears assets {assets}, events {events}"
         if not self.confirmed(arguments, "clear", subject):
             return
         trail.clear()
-        self._feed.info(f"clear: cleared entries {entries}, events {events}")
+        self._feed.info(f"clear: cleared assets {assets}, events {events}")
 
 
 class HelpCommand(Command):
@@ -334,7 +508,7 @@ class Commands(Node):
         Returns the sorted command names that start with `name`.
 
         >>> self.matching('e')
-        ['entries', 'events', 'exit']
+        ['events', 'exit']
         """
         out = sorted(
             key

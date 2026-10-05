@@ -15,7 +15,7 @@ from trail.event import Events
 class TestSelect:
     """
     Five events: a.csv, b.csv and c.csv tracked, a.csv offtrailed, then tracked again under a
-    new entry. Their timestamps are pinned a minute apart from 10:00 UTC today.
+    new asset. Their timestamps are pinned a minute apart from 10:00 UTC today.
     """
 
     @staticmethod
@@ -25,7 +25,7 @@ class TestSelect:
             root = Path(temporary).resolve()
             for name, size in (("a.csv", 1), ("b.csv", 10), ("c.csv", 100)):
                 (root / name).write_text("x" * size, encoding="utf-8")
-            trail = Trail(root, tracked=False)
+            trail = Trail(root, markers=None)
             trail.track(root / "a.csv")
             trail.track(root / "b.csv")
             trail.track(root / "c.csv")
@@ -71,10 +71,10 @@ class TestSelect:
         with self.session() as (trail, root):
             events = trail.events
             event = events.select[1]
-            first = events.select[0].entry
+            first = events.select[0].asset
             assert self.positions(trail, events.select(f"id={event.id}")) == [1]
-            # the entry is held by reference, and compares by its id
-            assert self.positions(trail, events.select(f"entry={first.id}")) == [0, 3]
+            # the asset is held by reference, and compares by its id
+            assert self.positions(trail, events.select(f"asset={first.id}")) == [0, 3]
             assert self.positions(trail, events.select(f"src_path={root / 'a.csv'}")) == [0, 3, 4]
             # an id matches whole, not by prefix
             assert not events.select(f"id={event.id[:8]}")
@@ -177,13 +177,13 @@ class TestSelect:
     def test_cls_holds_for_the_class_and_its_bases(self) -> None:
         with self.session() as (trail, _):
             events = trail.events
-            assert self.positions(trail, events.select("cls=AddEntryEvent")) == [0, 1, 2, 4]
-            assert self.positions(trail, events.select("cls=RemoveEntryEvent")) == [3]
-            assert self.positions(trail, events.select("cls!=AddEntryEvent")) == [3]
+            assert self.positions(trail, events.select("cls=AddAssetEvent")) == [0, 1, 2, 4]
+            assert self.positions(trail, events.select("cls=RemoveAssetEvent")) == [3]
+            assert self.positions(trail, events.select("cls!=AddAssetEvent")) == [3]
             # as isinstance would, rather than the exact class
             assert self.positions(trail, events.select("cls=Event")) == [0, 1, 2, 3, 4]
             assert not trail.assets.select("cls=Dir")
-            assert len(trail.entries.select("cls=Entry")) == 3
+            assert len(trail.assets.select("cls=Asset")) == 3
             with pytest.raises(TypeError, match="only by = and !="):
                 events.select("cls<Event")
 
@@ -207,7 +207,7 @@ class TestSelect:
             assert events.jsonl.path.read_bytes() == history
             assert len(events) == 5
 
-    def test_entries_select_by_id_path_and_name(self) -> None:
+    def test_assets_select_by_id_path_and_name(self) -> None:
         with self.session() as (trail, root):
             assets = trail.assets
             b = assets[root / "b.csv"]
@@ -216,23 +216,23 @@ class TestSelect:
             assert type(selection) is type(assets)
             assert list(selection) == [b]
             assert list(assets.select(f"path={root / 'b.csv'}")) == [b]
-            # an entry's path is a Path, so a relative one is resolved before it is compared
+            # an asset's path is a Path, so a relative one is resolved before it is compared
             with chdir(root):
                 assert list(assets.select("path=b.csv")) == [b]
             assert list(assets.select("name=c.csv or name=b.csv")) == [b, c]
             assert assets.select[0] is b
             assert list(assets.select[-1:]) == [assets[root / "a.csv"]]
 
-    def test_changing_an_entries_selection_leaves_the_collection_alone(self) -> None:
+    def test_changing_an_assets_selection_leaves_the_collection_alone(self) -> None:
         with self.session() as (trail, root):
             assets = trail.assets
             b = root / "b.csv"
             selection = assets.select[:]
-            assert selection.path2entry is not assets.path2entry
+            assert selection.path2asset is not assets.path2asset
             del selection[b]
             assert b not in selection
             assert b in assets
-            assert b in trail.entries
+            assert b in trail.assets
             assert assets[b].path == b
 
 
@@ -292,12 +292,12 @@ if __name__ == "__main__":
             "changing a selection leaves the log alone",
         ),
         (
-            "test_entries_select_by_id_path_and_name",
-            "entries select by id, path and name",
+            "test_assets_select_by_id_path_and_name",
+            "assets select by id, path and name",
         ),
         (
-            "test_changing_an_entries_selection_leaves_the_collection_alone",
-            "changing an entries selection leaves the collection alone",
+            "test_changing_an_assets_selection_leaves_the_collection_alone",
+            "changing an assets selection leaves the collection alone",
         ),
     ]
 

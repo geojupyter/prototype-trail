@@ -5,6 +5,7 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "ipykernel>=7.3.0",
+    "pathspec>=0.12",
     "prompt_toolkit>=3.0.52",
     "watchdog>=6.0",
 ]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Protocol
@@ -13,6 +13,8 @@ PathLike = str | os.PathLike[str] | Path
 SIZE_UNITS: Final[tuple[str, ...]] = ('KiB', 'MiB', 'GiB', 'TiB')
 # what a stat reports for a resource that has gone since it was tracked
 MISSING: Final = '<missing>'
+# directories that hold one dataset, so they are tracked whole and never walked into
+CONTAINERS: Final = frozenset({'.zarr', '.gdb', '.safe', '.n5'})
 
 
 def normalize_id(identifier: str | int) -> str:
@@ -61,6 +63,21 @@ def bare_repr(value: object) -> str:
     return value
 
 
+def plural(
+        count: int,
+        noun: str,
+) -> str:
+    """
+    A count with its noun, in the plural unless the count is one.
+
+    >>> plural(1, 'asset')
+    '1 asset'
+    """
+    if count == 1:
+        return f'{count} {noun}'
+    return f'{count} {noun}s'
+
+
 def list_repr(
         name: str,
         shown: Iterable[object],
@@ -80,6 +97,28 @@ def list_repr(
         lines.append(f'{indent * 2}<{hidden} others>')
     lines.append(f'{indent}]')
     return lines
+
+
+def lines_repr(
+        name: str,
+        lines: Iterable[str],
+) -> str:
+    """
+    A header with the count, then each line indented under it.
+
+    >>> trail.markers
+    Markers (3)
+        ./
+        *.csv
+        data/*.png
+    """
+    lines = list(lines)
+    out = [f'{name} ({len(lines)})']
+    out.extend(
+        f'    {line}'
+        for line in lines
+    )
+    return '\n'.join(out)
 
 
 def asset_repr(
@@ -149,3 +188,70 @@ def items_repr(
             for key, value in item._repr_items()
         )
     return '\n'.join(lines)
+
+
+def container(path: Path) -> bool:
+    """
+    Whether a directory holds one dataset, judged by its suffix.
+
+    >>> container(Path('cube.zarr'))
+    True
+    """
+    return path.suffix.lower() in CONTAINERS
+
+
+def walk(
+        walks: Mapping[Path, bool],
+        descends: Callable[[Path], bool],
+) -> Iterator[Path]:
+    """
+    Yields the files in each directory of `walks`, and in its subfolders when it maps to True.
+    A subfolder is entered only if `descends` allows it. A container is yielded as a candidate
+    of its own and never entered. Symlinks are skipped.
+    """
+    # shallowest first, so a directory inside one walked recursively is walked once, as part
+    # of it
+    ordered = sorted(
+        walks,
+        key=lambda root: len(root.parts),
+    )
+    kept: list[Path] = []
+    for root in ordered:
+        if any(
+            walks[ancestor]
+            and root.is_relative_to(ancestor)
+            for ancestor in kept
+        ):
+            continue
+        kept.append(root)
+    for root in kept:
+        if not root.is_dir():
+            continue
+        if not walks[root]:
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    path = Path(entry.path)
+                    if entry.is_symlink():
+                        continue
+                    if (
+                        entry.is_file()
+                        or container(path)
+                    ):
+                        yield path
+            continue
+        for directory, dirnames, filenames in os.walk(root):
+            parent = Path(directory)
+            descended = []
+            for name in dirnames:
+                path = parent / name
+                if container(path):
+                    if not path.is_symlink():
+                        yield path
+                elif descends(path):
+                    descended.append(name)
+            # pruned in place so that os.walk does not descend
+            dirnames[:] = descended
+            for name in filenames:
+                path = parent / name
+                if not path.is_symlink():
+                    yield path

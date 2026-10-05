@@ -10,8 +10,7 @@ from prompt_toolkit.formatted_text import StyleAndTextTuples
 
 from trail.cli.node import Node
 from trail.cli.theme import EMBLEM_GLYPHS, INDENT, VERB_STYLES
-from trail.dir import Dir
-from trail.event import AddEntryEvent, Event, RemoveEntryEvent, WatchdogEvent
+from trail.event import AddAssetEvent, Event, RemoveAssetEvent, WatchdogEvent
 from trail.util import Repr, bare_repr
 
 if TYPE_CHECKING:
@@ -20,7 +19,7 @@ if TYPE_CHECKING:
 
 class Renderer(Node):
     """
-    Turns the Trail's events and entries into feed rows. Wording choices such as an event's
+    Turns the Trail's events and assets into feed rows. Wording choices such as an event's
     verb are presentation only. They live here so a later provenance export can word the same
     events differently. The Renderer holds no state. The feed tracks the current date itself.
     """
@@ -52,7 +51,7 @@ class Renderer(Node):
         position: int,
     ) -> list[StyleAndTextTuples]:
         """
-        Returns the rows for an event or entry, which are a heading and then one line per
+        Returns the rows for an event or asset, which are a heading and then one line per
         field. Fields come from the item's `_repr_items`, so a new field on the class shows up
         here automatically.
 
@@ -96,7 +95,7 @@ class Renderer(Node):
     def style(self, item: Repr) -> str:
         """
         Returns the style class for a heading. Events are coloured by their verb, or
-        `class:event` if the verb has no style. Entries use `class:kind`.
+        `class:event` if the verb has no style. Assets use `class:kind`.
         """
         if isinstance(item, Event):
             return VERB_STYLES.get(self.verb(item), "class:event")
@@ -104,17 +103,17 @@ class Renderer(Node):
 
     def parameters(self, item: Repr) -> Iterator[tuple[str, str]]:
         """
-        Yields each field's name and display value. For an event, the id of the entry it was
+        Yields each field's name and display value. For an event, the id of the asset it was
         recorded against comes last.
         """
         for name, value in item._repr_items():
             yield name, self.value(name, value)
         # the repr leaves the resource out, but the stored record keeps it, and that id is the
         # identity the whole project turns on, so the feed states it last
-        entry = getattr(item, "entry", None)
-        if entry is None:
+        asset = getattr(item, "asset", None)
+        if asset is None:
             return
-        yield "entry", bare_repr(entry.id)
+        yield "asset", bare_repr(asset.id)
 
     def parameter(
         self,
@@ -174,7 +173,7 @@ class Renderer(Node):
     def header(self) -> StyleAndTextTuples:
         """
         Returns the header row above the command bar. It shows the Trail id, the project root,
-        `(nodir)` when nothing is saved to disk, the entry and event counts, and whether the
+        `(nodir)` when nothing is saved to disk, the asset, Dir and event counts, and whether the
         watchdog is running. It is redrawn on every refresh, so the counts stay current.
 
          trail #1ff756ca11b54b3994c7b26bbda99c0a  ~/project  assets 2  dirs 1  events 14  watching
@@ -226,14 +225,16 @@ class Renderer(Node):
     @staticmethod
     def verb(event: Event) -> str:
         """
-        Returns the verb for an event, which sets its heading colour. AddEntryEvent is
-        `tracked` and RemoveEntryEvent is `offtrailed`. A WatchdogEvent uses its `event_type`,
-        except a synthetic creation, which is `discovered`. Any other event is named after its
-        class.
+        Returns the verb for an event, which sets its heading colour. AddAssetEvent is
+        `tracked`, or `discovered` when a line of `.markers` picked the asset up.
+        RemoveAssetEvent is `offtrailed`. A WatchdogEvent uses its `event_type`, except a
+        synthetic creation, which is `discovered`. Any other event is named after its class.
         """
-        if isinstance(event, AddEntryEvent):
+        if isinstance(event, AddAssetEvent):
+            if event.rule is not None:
+                return "discovered"
             return "tracked"
-        if isinstance(event, RemoveEntryEvent):
+        if isinstance(event, RemoveAssetEvent):
             return "offtrailed"
         if isinstance(event, WatchdogEvent):
             # a synthetic creation is a resource the walk of a new directory turned up
@@ -247,7 +248,10 @@ class Renderer(Node):
         """Returns True if the event is about a directory."""
         if getattr(event, "is_directory", False):
             return True
-        return isinstance(event.entry, Dir)
+        return (
+            event.asset is not None
+            and event.asset.is_directory
+        )
 
     @staticmethod
     def home(path: Path) -> str:

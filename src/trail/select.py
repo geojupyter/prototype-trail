@@ -51,7 +51,7 @@ class Select[T: Selectable[Any], V](Node):
         events.select('cls=WatchdogEvent event_type=opened')
 
     Every term names its field, and the value is read as whatever type the record holds there;
-    a record held by reference, such as an event's entry, compares by its id. `cls` is the
+    a record held by reference, such as an event's asset, compares by its id. `cls` is the
     record's class, and `cls=Event` holds for its subclasses too, as isinstance would. `not`
     binds tightest, then `and`, then `or`, and terms written side by side are joined by `and`.
 
@@ -196,7 +196,7 @@ class Select[T: Selectable[Any], V](Node):
     def subset(self, keys: Iterable[str]) -> T:
         collection = self._parent
         out = copy(collection)
-        # whatever the original cached, such as its jsonl or path2entry, was built from it and
+        # whatever the original cached, such as its jsonl or path2asset, was built from it and
         # is shared by the shallow copy; dropped, it is rebuilt from the copy on access
         cached = [
             name
@@ -273,7 +273,7 @@ class Select[T: Selectable[Any], V](Node):
                 or out == ''
         ):
             return None
-        # a record held by reference, such as an event's entry, is compared by its id
+        # a record held by reference, such as an event's asset, is compared by its id
         return getattr(out, 'id', out)
 
     def coerce(

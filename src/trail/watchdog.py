@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import os
+from collections.abc import AsyncIterator, Iterable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict
 from functools import cached_property
@@ -24,12 +25,12 @@ from watchdog.events import (
 from watchdog.observers import Observer
 from watchdog.observers.api import BaseObserver, ObservedWatch
 
-from trail.entry import Entry
 from trail.event import WatchdogEvent
 from trail.node import Node
 from trail.util import list_repr
 
 if TYPE_CHECKING:
+    from trail.asset import Asset
     from trail.trail import Trail
 
 STOP: Final = object()
@@ -55,15 +56,16 @@ class Handler(FileSystemEventHandler, Node):
 
 class Watchdog(Node):
     """
-    Observes the directories backing the Trail's entries for filesystem events.
+    Observes the directories `desired` names for filesystem events. Each watch is
+    non-recursive, so that `.git`, `.venv` and the inside of directory assets can be left out.
 
     >>> trail.watchdog
     Watchdog
         running: True
         watches: [
-            '/tmp/tmpbzh09nb5/folder',
-            '/tmp/tmpbzh09nb5',
-            '/tmp/tmpbzh09nb5/folder/nested',
+            /tmp/tmpp_bl05lq,
+            /tmp,
+            /tmp/tmpp_bl05lq/data,
         ]
     """
 
@@ -73,9 +75,12 @@ class Watchdog(Node):
     repr_limit = 10
 
     def __repr__(self) -> str:
-        # while dormant the membership is all that remains of the watches
+        """
+        Shows whether the watchdog runs, and its watches. While dormant, it shows the watches
+        the next session will place.
+        """
         if self.watches is None:
-            directories = list(self.dir2ids)
+            directories = sorted(self.desired())
         else:
             directories = list(self.watches)
         lines = [
@@ -120,22 +125,18 @@ class Watchdog(Node):
         return None
 
     @cached_property
-    def dir2ids(self) -> dict[Path, set[str]]:
-        """
-        Maps directories to the entry IDs requiring observation. Releasing the last ID removes
-        the directory's watch. Outlives a session so the next start can recreate the watches.
-        """
-        return {}
-
-    @cached_property
     def consumer(self) -> asyncio.Task[None] | None:
         """Background asyncio task that batches queued events and applies them to the Trail."""
         return None
 
     def watch(self, directory: Path) -> None:
+        """
+        Place a non-recursive watch on a directory, starting a session if an asyncio loop is
+        running. A missing or already watched directory is skipped. While dormant, nothing is
+        placed, and the next session places whatever `desired` names.
+        """
         if not directory.is_dir():
             return
-        # while dormant, dir2ids alone records the directory and _start() schedules it
         if not self.ensure() or directory in self.watches:
             return
         self.watches[directory] = self.observer.schedule(
@@ -154,33 +155,116 @@ class Watchdog(Node):
             ],
         )
 
-    def release(
-        self,
-        directory: Path,
-        identifier: str,
-    ) -> None:
-        ids = self.dir2ids.get(directory)
-        if ids is None or identifier not in ids:
+    def unwatch(self, directory: Path) -> None:
+        """Remove the watch on a directory, if there is one."""
+        if self.watches is None:
             return
-        if len(ids) == 1:
-            if self.watches is not None:
-                watch = self.watches.get(directory)
-                if watch:
-                    with suppress(KeyError):
-                        self.observer.unschedule(watch)
-                    del self.watches[directory]
-            del self.dir2ids[directory]
-        else:
-            ids.remove(identifier)
+        watch = self.watches.pop(directory, None)
+        if watch is not None:
+            with suppress(KeyError):
+                self.observer.unschedule(watch)
 
     def invalidate(self, directory: Path) -> None:
+        """Remove the watches at or below a directory that was deleted or moved away."""
         if self.watches is None:
             return
         for path in tuple(self.watches):
             if path.is_relative_to(directory):
-                with suppress(KeyError):
-                    self.observer.unschedule(self.watches[path])
-                del self.watches[path]
+                self.unwatch(path)
+
+    def desired(self, within: Path | None = None) -> set[Path]:
+        """
+        Returns the directories to watch. A recursive Dir is watched with its subtree, pruned
+        the way a scan prunes it, and any other Dir alone. The parent of each Dir is watched
+        too, to see the Dir itself renamed. So is the parent of each asset, and the top level of
+        each directory asset. With `within`, only the directories at or below it are returned.
+
+        >>> trail.watchdog.desired(project / 'data')
+        {PosixPath('/tmp/tmpp_bl05lq/data')}
+        """
+        trail = self._trail
+        out: set[Path] = set()
+        for directory in trail.dirs.values():
+            path = directory.path
+            out.add(path.parent)
+            if not directory.recursive:
+                out.add(path)
+            elif (
+                within is None
+                or path.is_relative_to(within)
+            ):
+                out.update(self._subtree(path))
+            elif (
+                within.is_relative_to(path)
+                and self._reaches(path, within)
+            ):
+                out.update(self._subtree(within))
+        for asset in trail.assets:
+            out.add(asset.directory)
+            if asset.is_directory:
+                out.add(asset.path)
+        return {
+            path
+            for path in out
+            if (
+                (
+                    within is None
+                    or path.is_relative_to(within)
+                )
+                and not trail._ignored(path)
+                and path.is_dir()
+            )
+        }
+
+    def _subtree(self, root: Path) -> list[Path]:
+        """Returns a directory and every subfolder a scan would walk into."""
+        descends = self._trail.assets._descends
+        out = []
+        for directory, dirnames, _ in os.walk(root):
+            parent = Path(directory)
+            out.append(parent)
+            dirnames[:] = [
+                name
+                for name in dirnames
+                if descends(parent / name)
+            ]
+        return out
+
+    def _reaches(
+        self,
+        root: Path,
+        path: Path,
+    ) -> bool:
+        """Whether a walk of `root` would descend as far as `path`."""
+        descends = self._trail.assets._descends
+        while path != root:
+            if not descends(path):
+                return False
+            path = path.parent
+        return True
+
+    def reconcile(self) -> None:
+        """
+        Schedule the directories `desired` names that are not yet watched, and unschedule the
+        watches it no longer names. While dormant, the next session schedules them instead.
+        """
+        desired = self.desired()
+        if (
+            not desired
+            and not self.watches
+        ):
+            return
+        if not self.ensure():
+            return
+        for path in tuple(self.watches):
+            if path not in desired:
+                self.unwatch(path)
+        self.extend(desired)
+
+    def extend(self, directories: Iterable[Path]) -> None:
+        """Watch each directory given. See `watch`."""
+        for directory in directories:
+            self.watch(directory)
 
     @property
     def running(self) -> bool:
@@ -191,7 +275,7 @@ class Watchdog(Node):
     def ensure(self) -> bool:
         """
         Start observing without a context manager, so a Trail kept alive in a notebook cell or a
-        REPL begins tracking the moment an entry is tracked. Returns False when no asyncio loop is
+        REPL begins tracking the moment an asset is tracked. Returns False when no asyncio loop is
         running, leaving the observer dormant until start() or context() is awaited.
         """
         if self.running:
@@ -212,8 +296,7 @@ class Watchdog(Node):
         try:
             # created before the watches so a reentrant watch() sees a running Watchdog
             self.consumer = asyncio.create_task(self.apply(), name="watchdog-consumer")
-            for directory in self.dir2ids:
-                self.watch(directory)
+            self.extend(self.desired())
             self.observer.start()
         except BaseException:
             self.observer.stop()
@@ -258,7 +341,7 @@ class Watchdog(Node):
     async def context(self) -> AsyncIterator[Self]:
         """Observe asynchronously, draining queued changes when the context exits.
 
-        Optional: ensure() already starts the observer when entries are tracked under a running
+        Optional: ensure() already starts the observer when assets are tracked under a running
         asyncio loop. Use this context when the queue must be drained deterministically at a
         known point rather than whenever the consumer happens to be scheduled.
 
@@ -271,8 +354,10 @@ class Watchdog(Node):
             await self.stop()
 
     def clear(self) -> None:
-        # native observer threads cannot be restarted, so the next start builds a new session;
-        # dir2ids is untouched and carries the directory membership across
+        """
+        Forget the session. Native observer threads cannot be restarted, so the next start
+        builds a new session, which places whatever `desired` names at that point.
+        """
         self.consumer = None
         self.loop = None
         self.queue = None
@@ -281,8 +366,8 @@ class Watchdog(Node):
 
     async def apply(self) -> None:
         """
-        Iterate across the queue of events, applying them to the entries of the Trail so upcoming Events
-        may find their corresponding Entry.
+        Iterate across the queue of events, applying them to the assets of the Trail so upcoming
+        events may find their corresponding Asset.
         """
         # bound to this session's queue so a clear() cannot strand the drain
         queue = self.queue
@@ -305,51 +390,93 @@ class Watchdog(Node):
                     break
                 batch.append(event)
 
-            trail = self._trail
-            for event in batch:
-                if event.apply(trail) is None:
-                    # a file appearing in a watched directory that is not itself tracked, such as
-                    # the parent of a tracked asset, is tracked only if a marker indicates it
-                    if (
-                        not event.is_directory
-                        and event.event_type in ("created", "moved")
-                    ):
-                        # the file may already be gone by the time the batch is applied
-                        with suppress(FileNotFoundError):
-                            trail.entries.mark(event.dest_path or event.src_path)
-                    continue
-                # todo: event.apply should contain the logic for this, not watchdog.apply
-                if event.is_directory and event.event_type in ("created", "moved"):
-                    path = Path(event.dest_path or event.src_path)
-                    if path.is_dir() and not trail._ignored(path):
-                        try:
-                            root = trail.dirs.get(path)
-                            if root is None:
-                                root = Entry.from_path(path, trail=trail)
-                            resources = tuple(root.walk())
-                        except (FileNotFoundError, NotADirectoryError):
-                            continue
-                        tracked = []
-                        try:
-                            for resource in resources:
-                                if (
-                                    resource._parent.id2entry.get(resource.id)
-                                    is resource
-                                ):
-                                    continue
-                                resource.track()
-                                tracked.append(resource)
-                        except Exception:
-                            for resource in reversed(tracked):
-                                resource.offtrail()
-                            raise
-                        for resource in tracked:
-                            discovered = WatchdogEvent(
-                                src_path=str(resource.path),
-                                event_type="created",
-                                is_directory=resource.path in trail.dirs,
-                                is_synthetic=True,
-                            )
-                            discovered.apply(trail)
+            self.consume(batch)
             if stopped:
                 return
+
+    def consume(self, batch: list[WatchdogEvent]) -> None:
+        """
+        Apply a batch of events to the Trail. An event inside a directory asset is recorded
+        once per batch against the asset: a read as `opened`, anything else as `modified`.
+        """
+        trail = self._trail
+        touched: dict[Asset, set[str]] = {}
+        moved = False
+        for event in batch:
+            enclosing = self._enclosing(event)
+            if enclosing is not None:
+                touched.setdefault(enclosing, set()).add(event.event_type)
+                continue
+            if event.is_directory:
+                self._directory(event)
+                continue
+            if event.apply(trail) is not None:
+                moved |= event.event_type == "moved"
+                continue
+            # a file appearing that is not tracked is tracked if .markers indicates it
+            if event.event_type in ("created", "moved"):
+                # the file may already be gone by the time the batch is applied
+                with suppress(FileNotFoundError):
+                    trail.assets.scan(event.dest_path or event.src_path)
+        for asset, types in touched.items():
+            if types == {"opened"}:
+                event_type = "opened"
+            else:
+                event_type = "modified"
+            collapsed = WatchdogEvent(
+                src_path=str(asset.path),
+                event_type=event_type,
+                is_directory=True,
+                is_synthetic=True,
+            )
+            collapsed.apply(trail)
+        # a file moved into a directory not yet watched needs that directory watched
+        if moved:
+            self.reconcile()
+
+    def _enclosing(self, event: WatchdogEvent) -> Asset | None:
+        """Returns the directory asset an event happened inside of, or None."""
+        path2asset = self._trail.assets.path2asset
+        for text in (event.src_path, event.dest_path):
+            if not text:
+                continue
+            for parent in Path(text).parents:
+                asset = path2asset.get(parent)
+                if (
+                    asset is not None
+                    and asset.is_directory
+                ):
+                    return asset
+        return None
+
+    def _directory(self, event: WatchdogEvent) -> None:
+        """
+        Apply a directory event. It is logged only if the directory is a directory asset. A
+        deletion removes the watches at and below the directory. A creation or a move watches
+        what `desired` names below the new path, then scans it. A move also repaths the assets
+        that were under the old path.
+        """
+        trail = self._trail
+        event.apply(trail)
+        source = Path(event.src_path).resolve()
+        if event.event_type == "deleted":
+            self.invalidate(source)
+            return
+        if (
+            event.event_type == "moved"
+            and event.dest_path
+        ):
+            destination = Path(event.dest_path).resolve()
+            if not trail._ignored(source):
+                trail._moved(source, destination)
+            self.invalidate(source)
+        elif event.event_type == "created":
+            destination = source
+        else:
+            return
+        if trail._ignored(destination):
+            return
+        # files written before the watch was placed never produce an event, so they are scanned
+        self.extend(self.desired(destination))
+        with suppress(FileNotFoundError, NotADirectoryError):
+            trail.assets.scan(destination)

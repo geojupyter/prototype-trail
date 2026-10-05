@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import warnings
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from functools import cached_property
@@ -84,7 +85,7 @@ class Console(Node):
 
         > events -2: st_size=0
         events (1 of 14)
-        13. AddEntryEvent
+        13. AddAssetEvent
             id: 815694f873604da5b63cd4c65900ccf4
         """
         return Feed(self)
@@ -92,7 +93,7 @@ class Console(Node):
     @cached_property
     def renderer(self) -> Renderer:
         """
-        Returns a Renderer instance, which turns events and entries into rows for the feed.
+        Returns a Renderer instance, which turns events and assets into rows for the feed.
         Each record is a heading with its position and class name, followed by one line per
         field. Paths under the project root are shown relative to it. The Renderer also builds
         the header above the command bar.
@@ -114,7 +115,7 @@ class Console(Node):
         by any prefix that matches only that command.
 
         >>> self.commands
-        Commands (track, untrack, assets, dirs, entries, events, clear, help, restart, quit, exit)
+        Commands (track, offtrail, mark, unmark, markers, assets, dirs, events, clear, help, ...)
         >>> self.commands.find('ev')
         EventsCommand('events')
         """
@@ -125,13 +126,14 @@ class Console(Node):
         """
         Returns a CommandCompleter, which handles <TAB> completion in the command bar. The
         first word is completed against the command names. The rest of the line is passed to
-        that command's `complete`. For example, `track` completes filesystem paths, `untrack`
-        completes tracked paths, and listings complete field names.
+        that command's `complete`. For example, `track` completes filesystem paths, `offtrail`
+        completes tracked paths, `mark` completes paths and extensions, and listings complete
+        field names.
 
         CommandCompleter is a prompt_toolkit Completer, not a Node, so it stores the console
         directly.
 
-        e<TAB>             entries, events, exit
+        e<TAB>             events, exit
         events src<TAB>    src_path=
         """
         return CommandCompleter(self)
@@ -258,7 +260,8 @@ class Console(Node):
         """
         Run one line from the command bar. The line is echoed to the feed, then passed to the
         command named by its first word. Events the command recorded are printed right after
-        it. An error raised by the command is printed to the feed instead of propagating.
+        it. An error raised by the command is printed to the feed instead of propagating, and
+        so is a warning, such as the one `unmark` gives about what stays tracked.
 
         > assets
         assets (2 of 2)
@@ -273,10 +276,14 @@ class Console(Node):
         command = self.commands.resolve(name)
         if command is not None:
             # a REPL outlives a mistyped argument; anything raised belongs in the feed
-            try:
-                command.submit(text[len(name):].lstrip())
-            except Exception as error:  # noqa: BLE001
-                self.feed.error(f"{type(error).__name__}: {error}")
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                try:
+                    command.submit(text[len(name):].lstrip())
+                except Exception as error:  # noqa: BLE001
+                    self.feed.error(f"{type(error).__name__}: {error}")
+            for warning in caught:
+                self.feed.info(str(warning.message))
         self.run.drain()
 
 
@@ -314,7 +321,13 @@ class Run(Node):
                 asyncio.create_task(self.monitor(), name="trail-console-monitor"),
             ]
             try:
-                with patch_stdout(raw=True):
+                # a warning raised while events are applied, such as a Dir that was renamed,
+                # would otherwise be written over the command bar
+                with (
+                    patch_stdout(raw=True),
+                    warnings.catch_warnings(),
+                ):
+                    warnings.showwarning = self.warn
                     await application.run_async()
             finally:
                 for task in tasks:
@@ -323,6 +336,16 @@ class Run(Node):
                     with suppress(asyncio.CancelledError):
                         await task
                 await watching.aclose()
+
+    def warn(
+        self,
+        message: Warning | str,
+        *args: object,
+        **kwargs: object,
+    ) -> None:
+        """Print a warning to the feed. Installed as `warnings.showwarning` while running."""
+        self._feed.info(str(message))
+        self._console.application.invalidate()
 
     async def stream(self, watching: AsyncIterator[Event]) -> None:
         """
@@ -367,7 +390,7 @@ class Run(Node):
         """
         Print the events logged since the last drain. Returns True if there were any.
 
-        13. AddEntryEvent
+        13. AddAssetEvent
             id: 815694f873604da5b63cd4c65900ccf4
             timestamp: 19:32:48.068
             src_path: /home/user/Downloads/asset.txt
@@ -390,9 +413,10 @@ class Run(Node):
 
     def banner(self) -> None:
         """
-        Print the welcome, the Trail id, the project root, the entry and event counts, and a
-        usage hint. Blank lines set the welcome apart and separate the banner from the events
-        printed after it. With `--nodir`, a line after the root says events are held in memory.
+        Print the welcome, the Trail id, the project root, the asset, Dir and event counts, any
+        warnings about `.markers`, and a usage hint. Blank lines set the welcome apart and
+        separate the banner from the events printed after it. With `--nodir`, a line after the
+        root says events are held in memory.
 
         🍃🍄🌲 Welcome back to Trail! 🌲🍄🍃
 
@@ -413,6 +437,8 @@ class Run(Node):
             f"  dirs {len(trail.dirs)}"
             f"  events {len(trail.events)}"
         )
+        for warning in trail.markers.warnings:
+            feed.error(warning)
         feed.info("type 'help' for help")
         feed.blank()
 

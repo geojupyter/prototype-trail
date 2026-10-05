@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, TYPE_CHECKING, Protocol, Self, overload
+from typing import TYPE_CHECKING, Any, Protocol, overload
 
 from trail.node import Node
 from trail.select import Select
@@ -23,7 +23,7 @@ class Collection[K, V: Record](Node):
     `data` maps every id to its record and `ids` holds the order they were recorded in. The
     mapping is how a collection is stored rather than what it is, so iteration, membership and
     length speak of records rather than of keys, and `K` is whatever a record may be addressed
-    by: its id alone for the log, a path as well for the entries.
+    by: its id alone for the log, a path as well for the assets.
     """
 
     _parent: Trail

@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Self
 from uuid import uuid4
 
+from trail.asset import Asset
 from trail.collection import Collection
-from trail.entry import Entry
 from trail.node import Node
 from trail.util import asset_repr, mtime_repr, normalize_id, st_size_repr
 
@@ -33,14 +33,21 @@ class Get:
         self._parent = parent
 
     def __getattr__(self, name: str) -> object | None:
-        return getattr(self._parent, name)
+        """
+        Returns the event's attribute, or None if the event has no such field.
+
+        >>> trail.events.select[-1].get.rule
+        >>> trail.events.select[0].get.rule
+        '*.csv'
+        """
+        return getattr(self._parent, name, None)
 
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class Event:
     classes: ClassVar[dict[str, type[Event]]] = {}
 
-    entry: Entry | None = field(default=None, init=False, repr=False)
+    asset: Asset | None = field(default=None, init=False, repr=False)
     id: str = field(default_factory=lambda: uuid4().hex, repr=True)
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
@@ -84,7 +91,11 @@ class Event:
         trail: Trail,
         *,
         replay: bool = False,
-    ) -> Entry | None:
+    ) -> Asset | None:
+        """
+        Apply the event to the Trail and return the asset it is about. With `replay`, the event
+        comes from the log and its asset is already resolved. Each subclass implements it.
+        """
         raise NotImplementedError
 
     def __init_subclass__(cls, **kwargs) -> None:
@@ -93,7 +104,11 @@ class Event:
         cls.classes[cls.__name__] = cls
 
     @classmethod
-    def from_record(cls, /, trail: Trail, resolved_entry: Entry | None = None, **record) -> Event:
+    def from_record(cls, /, trail: Trail, resolved_asset: Asset | None = None, **record) -> Event:
+        """
+        Rebuild an event from one record of the log. The asset it names is `resolved_asset` if
+        given, otherwise the tracked asset with the record's asset id.
+        """
         name = record.pop("cls")
         event_cls = cls.classes.get(name)
 
@@ -101,7 +116,7 @@ class Event:
             event_cls = cls
         if event_cls is None:
             raise ValueError(f"Unknown event class: {name!r}")
-        entry_id = normalize_id(record.pop("entry"))
+        asset_id = normalize_id(record.pop("asset"))
         record["timestamp"] = datetime.fromisoformat(record["timestamp"])
         deferred = {
             field.name: record.pop(field.name)
@@ -112,116 +127,174 @@ class Event:
         for name, value in deferred.items():
             setattr(event, name, value)
 
-        if resolved_entry is None:
-            resolved_entry = trail.entries[entry_id]
-        elif resolved_entry.id != entry_id:
-            raise ValueError(f"Entry ID does not match event record: {entry_id}")
-        event.entry = resolved_entry
+        if resolved_asset is None:
+            resolved_asset = trail.assets[asset_id]
+        elif resolved_asset.id != asset_id:
+            raise ValueError(f"Asset ID does not match event record: {asset_id}")
+        event.asset = resolved_asset
 
         return event
 
     def to_record(self) -> dict:
+        """
+        Returns the event as one record of the log. The asset is held by its id, and the
+        timestamp in ISO format.
+        """
         out = {
-            field.name: getattr(self, field.name) for field in fields(self) if field.name != "entry"
+            field.name: getattr(self, field.name) for field in fields(self) if field.name != "asset"
         }
         out["cls"] = type(self).__name__
         out["timestamp"] = self.timestamp.isoformat()
-        out["entry"] = self.entry.id
+        out["asset"] = self.asset.id
         return out
 
 
 @dataclass(kw_only=True, slots=True, repr=False)
-class AddEntryEvent(Event):
+class AddAssetEvent(Event):
     """
     A resource being tracked. The recorded size and mtime are the baseline the filesystem is
     later compared against, so they are sampled once here and never refreshed on replay.
+    `rule` is the line of `.markers` that picked the resource up, or None if it was tracked
+    explicitly.
+
+    >>> trail.events.select[:1]
+    Events (1)
+        0. AddAssetEvent
+            id: 2d75b41403bc42abb52af2966bf8a194
+            timestamp: 06:39:37.824
+            src_path: /tmp/tmpp_bl05lq/new.csv
+            rule: *.csv
+            st_size: 17 B
+            st_mtime: 2026-10-02 23:39:37
     """
 
     src_path: str
+    rule: str | None = None
     st_size: int | None = field(default=None, init=False)
     st_mtime: float | None = field(default=None, init=False)
     is_directory: bool = field(default=False, init=False, repr=False)
-    entry: Entry | None = field(default=None, init=False, repr=False)
+    asset: Asset | None = field(default=None, init=False, repr=False)
 
     def apply(
         self,
         trail: Trail,
         *,
         replay: bool = False,
-    ) -> Entry:
+    ) -> Asset:
+        """
+        Track the asset at `src_path` and return it. Unless this is a replay, its size and
+        mtime are recorded as the baseline. The path is no longer counted as offtrailed.
+        """
         if replay:
-            entry = self.entry
+            asset = self.asset
         else:
-            entry = trail.entries.get(self.src_path)
-        if entry is None:
-            entry = Entry.from_path(self.src_path, trail=trail)
-        self.entry = entry
+            asset = trail.assets.get(self.src_path)
+        if asset is None:
+            asset = Asset.from_path(self.src_path, trail=trail)
+        self.asset = asset
 
-        entry.track()
-        self.is_directory = entry.path in trail.dirs
+        asset.track()
+        self.is_directory = asset.is_directory
         if not replay:
-            self._stat(entry)
-        trail._offtrailed_paths.discard(entry.path)
-        return entry
+            self._stat(asset)
+        trail._offtrailed_paths.discard(asset.path)
+        return asset
 
-    def _stat(self, entry: Entry) -> None:
-        # a resource may vanish between resolution and being tracked; an unrecorded
-        # baseline is preferable to refusing to track it outright
+    def _stat(self, asset: Asset) -> None:
+        """
+        Record the size and mtime of the asset. A directory asset records the totals of its
+        fingerprint. A resource that vanished before it was tracked records neither, rather
+        than failing to track.
+        """
         try:
-            metadata = entry.path.stat()
+            _, size, mtime = asset.fingerprint
         except OSError:
             return
-        self.st_size = metadata.st_size
-        self.st_mtime = metadata.st_mtime
+        self.st_size = size
+        self.st_mtime = mtime
 
 
 @dataclass(kw_only=True, slots=True, repr=False)
-class RemoveEntryEvent(Event):
+class RemoveAssetEvent(Event):
+    """
+    An asset being offtrailed. Its path is remembered as offtrailed, so `.markers` does not
+    pick it up again.
+
+    >>> trail.events.select[-1:]
+    Events (1)
+        0. RemoveAssetEvent
+            id: 730d5f59b035476e85cc1848e9b0f984
+            timestamp: 06:39:38.089
+            src_path: /tmp/tmpp_bl05lq/later.csv
+    """
+
     src_path: str
-    entry: Entry | None = field(default=None, init=False, repr=False)
+    asset: Asset | None = field(default=None, init=False, repr=False)
 
     def apply(
         self,
         trail: Trail,
         *,
         replay: bool = False,
-    ) -> Entry | None:
+    ) -> Asset | None:
+        """
+        Offtrail the asset at `src_path` and return it. Returns None if nothing is tracked
+        there.
+        """
         if replay:
-            entry = self.entry
+            asset = self.asset
         else:
-            entry = trail.entries.get(self.src_path)
-        if entry is None:
+            asset = trail.assets.get(self.src_path)
+        if asset is None:
             return None
-        self.entry = entry
-        entry.offtrail()
-        trail._offtrailed_paths.add(entry.path)
-        return entry
+        self.asset = asset
+        asset.offtrail()
+        trail._offtrailed_paths.add(asset.path)
+        return asset
 
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class WatchdogEvent(Event):
+    """
+    A filesystem event on a tracked asset. Events on paths that are not tracked are not
+    recorded. The watchdog decides whether such a path should be tracked.
+
+    >>> trail.events.select[-1:]
+    Events (1)
+        0. WatchdogEvent
+            id: b1bf61c7ad8e418f973329e3201f9ea4
+            timestamp: 06:42:07.593
+            src_path: /tmp/tmpp_bl05lq/new.csv
+            event_type: opened
+    """
+
     src_path: str
     dest_path: str = ""
     event_type: str = ""
     is_directory: bool = field(default=False, repr=False)
     is_synthetic: bool = field(default=False, repr=False)
-    entry: Entry | None = field(default=None, init=False, repr=False)
+    asset: Asset | None = field(default=None, init=False, repr=False)
 
     def apply(
         self,
         trail: Trail,
         *,
         replay: bool = False,
-    ) -> Entry | None:
+    ) -> Asset | None:
+        """
+        Apply the event to the tracked asset it is about, log it, and return the asset. A move
+        repaths the asset. Returns None for an event about a path that is not tracked. On
+        replay, the move or creation is applied to the asset the record names.
+        """
         if replay:
-            entry = self.entry
-            if entry is None:
-                raise ValueError("Cannot replay a watchdog event without an entry")
+            asset = self.asset
+            if asset is None:
+                raise ValueError("Cannot replay a watchdog event without an asset")
             if self.event_type == "moved" and self.dest_path:
-                entry.move(self.dest_path)
+                asset.move(self.dest_path)
             elif self.event_type == "created":
-                entry.track()
-            return entry
+                asset.track()
+            return asset
 
         if self.event_type not in {
             "created",
@@ -229,7 +302,7 @@ class WatchdogEvent(Event):
             "deleted",
             "moved",
             "opened",
-        } or (self.is_directory and self.event_type == "modified"):
+        }:
             return None
         source = Path(self.src_path).expanduser().resolve()
         destination = None
@@ -238,52 +311,25 @@ class WatchdogEvent(Event):
         for path in (source, destination):
             if path is not None and (path in trail._offtrailed_paths or trail._ignored(path)):
                 return None
-        if self.is_directory:
-            collection = trail.dirs
-        else:
-            collection = trail.assets
-        entry = collection.get(source)
-        if entry is None and destination is not None:
-            entry = collection.get(destination)
-        if entry is None:
-            if destination is None:
-                path = source
-            else:
-                path = destination
-            target = Path(self.dest_path or self.src_path)
-            if (
-                self.event_type not in {"created", "moved"}
-                or trail.dirs.get(path.parent) is None
-                or target.is_symlink()
-                # a tracked directory takes in every new subdirectory, but only marked files
-                or (
-                    not self.is_directory
-                    and not trail.markers.matches(path)
-                )
-            ):
-                return None
-            try:
-                if self.is_directory:
-                    exists = path.is_dir()
-                else:
-                    exists = path.is_file()
-                if not exists:
-                    return None
-                entry = collection.entry(path)[0]
-            except (FileNotFoundError, NotADirectoryError):
-                return None
+        assets = trail.assets
+        asset = assets.get(source)
+        if asset is None and destination is not None:
+            asset = assets.get(destination)
+        if (
+            asset is None
+            or asset.is_directory != self.is_directory
+        ):
+            return None
         self.src_path = str(source)
         if destination is not None:
             self.dest_path = str(destination)
-            if entry.path != destination:
-                entry.move(destination)
+            if asset.path != destination:
+                asset.move(destination)
         elif self.event_type == "created":
-            entry.track()
-        if self.is_directory and self.event_type == "deleted":
-            trail.watchdog.invalidate(source)
-        self.entry = entry
+            asset.track()
+        self.asset = asset
         trail.events.append(self)
-        return entry
+        return asset
 
 
 @dataclass(kw_only=True, slots=True, repr=False)
@@ -293,8 +339,9 @@ class JupyterEvent(Event):
         trail: Trail,
         *,
         replay: bool = False,
-    ) -> Entry | None:
-        return self.entry
+    ) -> Asset | None:
+        """Returns the asset the event names. A Jupyter event changes nothing on its own."""
+        return self.asset
 
 
 class JSONL(Node):
@@ -316,34 +363,34 @@ class JSONL(Node):
             return None
 
     def read(self) -> None:
-        from trail.asset import Asset
-        from trail.dir import Dir
-
+        """
+        Replay the log file into the Trail. Each asset is made from the first record about it,
+        and every record is then applied in order.
+        """
         path = self.path
         trail = self._trail
         if path is None or not path.exists():
             return
         loaded: dict[str, Event] = {}
-        entries: dict[str, Entry] = {}
+        assets: dict[str, Asset] = {}
         with path.open(encoding="utf-8") as file:
             for line in file:
                 if not line.strip():
                     continue
                 record = json.loads(line)
-                entry_id = normalize_id(record["entry"])
-                entry = entries.get(entry_id)
-                if entry is None:
-                    entry = trail.entries.get(entry_id)
-                    if entry is None:
-                        entry_path = Path(record["src_path"]).expanduser().resolve()
-                        if record.get("is_directory", entry_path.is_dir()):
-                            entry = Dir(path=entry_path, id=entry_id)
-                            entry._parent = trail.dirs
-                        else:
-                            entry = Asset(path=entry_path, id=entry_id)
-                            entry._parent = trail.assets
-                    entries[entry_id] = entry
-                event = Event.from_record(trail=trail, resolved_entry=entry, **record)
+                asset_id = normalize_id(record["asset"])
+                asset = assets.get(asset_id)
+                if asset is None:
+                    asset = trail.assets.id2asset.get(asset_id)
+                    if asset is None:
+                        asset = Asset(
+                            path=Path(record["src_path"]),
+                            id=asset_id,
+                            is_directory=record.get("is_directory", False),
+                        )
+                        asset._parent = trail.assets
+                    assets[asset_id] = asset
+                event = Event.from_record(trail=trail, resolved_asset=asset, **record)
                 if event.id in loaded:
                     raise ValueError(f"Duplicate event ID in {path}: {event.id}")
                 loaded[event.id] = event
@@ -470,7 +517,7 @@ class Events(Collection[str, Event]):
 
     >>> trail.events
     Events (9)
-        0. AddEntryEvent
+        0. AddAssetEvent
             id: '8a43da699bf242e7976e7bb74df81d0f'
             timestamp: '06:02:12.114'
             src_path: '/tmp/tmpbzh09nb5/folder'

@@ -43,7 +43,7 @@ class Feed(Node):
         so each one shows its position in the log rather than in this batch.
 
         Thursday 01 October 2026
-        0. AddEntryEvent
+        0. AddAssetEvent
             id: 7960adcac6b04dbb98cf1ed8562f7d6f
         """
         rows: list[StyleAndTextTuples] = []

@@ -2,26 +2,24 @@ from __future__ import annotations
 
 import shlex
 from collections.abc import Iterator, Sequence
-from fnmatch import fnmatch
 from glob import iglob
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Self
 
+from pathspec import PathSpec
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
 from trail.cli.node import Node
-from trail.dir import Dir
+from trail.markers import MAGIC
 from trail.select import SLICE, Select, Selectable
 
 if TYPE_CHECKING:
+    from trail.asset import Asset, Assets
     from trail.cli.commands import Commands
     from trail.cli.console import Console
-    from trail.entry import Entries, Entry
     from trail.event import Events
 
-# the characters that make a command argument a pattern rather than a path
-MAGIC = ("*", "?", "[")
 # what confirms an action that discards the record rather than adding to it
 FORCE = ("-f", "--force")
 # the action that empties a listing in place of listing it, when it is the first word
@@ -88,23 +86,23 @@ class Command(Node):
 
     def offer(self, word: str) -> Iterator[Completion]:
         """Yields completions from the tracked paths instead of the filesystem."""
-        for entry in self._trail.entries:
-            display = self.display(entry.path, isinstance(entry, Dir))
+        for asset in self._trail.assets:
+            display = self.display(asset.path, asset.is_directory)
             if display.startswith(word):
                 yield Completion(display, start_position=-len(word))
 
-    def entry(self, token: str) -> Entry | None:
+    def asset(self, token: str) -> Asset | None:
         """
-        Returns the tracked entry an argument names, by id or by path. A leading `#` forces the
+        Returns the tracked asset an argument names, by id or by path. A leading `#` forces the
         token to be read as an id, in case a file name would match first.
         """
-        entries = self._trail.entries
+        assets = self._trail.assets
         if token.startswith("#"):
-            return entries.id2entry.get(token[1:])
-        found = entries.get(token)
+            return assets.id2asset.get(token[1:])
+        found = assets.get(token)
         if found is not None:
             return found
-        return entries.get(self.absolute(Path(token).expanduser()))
+        return assets.get(self.absolute(Path(token).expanduser()))
 
     def paths(
         self,
@@ -119,7 +117,7 @@ class Command(Node):
         selected: dict[Path, None] = {}
         for token in arguments:
             expanded = Path(token).expanduser()
-            if not any(char in token for char in MAGIC):
+            if not MAGIC.search(token):
                 selected[self.absolute(expanded)] = None
                 continue
             if tracked:
@@ -136,12 +134,15 @@ class Command(Node):
         return list(selected)
 
     def tracked(self, pattern: Path) -> list[Path]:
-        """Returns the tracked paths that match a glob."""
-        expanded = str(self.absolute(pattern))
+        """
+        Returns the tracked paths that match a glob. The glob is read the way `.markers` reads
+        one, so `*` does not cross a `/` and `**` does.
+        """
+        spec = PathSpec.from_lines("gitignore", [self.absolute(pattern).as_posix()])
         out = sorted(
-            entry.path
-            for entry in self._trail.entries
-            if fnmatch(str(entry.path), expanded)
+            asset.path
+            for asset in self._trail.assets
+            if spec.match_file(asset.path.as_posix())
         )
         return out
 
@@ -235,7 +236,7 @@ class Listing(Command):
     default = 20
 
     @property
-    def collection(self) -> Entries | Events:
+    def collection(self) -> Assets | Events:
         """Returns the collection this command lists."""
         raise NotImplementedError
 
@@ -264,9 +265,9 @@ class Listing(Command):
         Print the records the expression selects, or clear the collection if the first word is
         `clear`.
 
-        > dirs
-        dirs (1 of 1)
-        0. Dir
+        > assets
+        assets (1 of 1)
+        0. Asset
             id: 25699925cd634e51b7c3541aebd5c5f2
         """
         # taken unsplit, since once the console's split has dropped the quotes, the parentheses
