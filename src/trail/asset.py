@@ -27,6 +27,7 @@ class Asset(Entry):
     A file or a directory tracked by a Trail. A directory asset is tracked whole, and its
     inside is never walked.
 
+    >>> trail: Trail
     >>> trail.assets.select[0]
     Asset
         id: 9d167ab8f5f64f3f8ac72f3132c70ad1
@@ -71,6 +72,8 @@ class Asset(Entry):
         is called. Raises ValueError for Trail metadata and for anything that is neither a
         regular file nor a directory.
 
+        >>> trail: Trail
+        >>> project: Path
         >>> Asset.from_path(project / 'cube.zarr', trail=trail)
         Asset
             id: 4e260dc608f64dbca950835a8981ca5d
@@ -105,7 +108,7 @@ class Asset(Entry):
         itself. A directory asset counts every file inside it, at any depth, which is computed
         on access rather than on every event.
 
-        >>> trail.assets[project / 'new.csv'].fingerprint
+        >>> self.fingerprint
         (1, 17, 1791009577.8193233)
         """
         metadata = self.path.stat()
@@ -171,6 +174,7 @@ class Assets(Entries[Asset]):
     """
     A collection of Asset objects tracked by a Trail, in the order they were tracked.
 
+    >>> trail: Trail
     >>> trail.assets
     Assets (2)
         0. Asset
@@ -207,7 +211,8 @@ class Assets(Entries[Asset]):
         recursively when it is recursive and otherwise only its own files. Returns the assets
         newly tracked.
 
-        >>> trail.assets.scan(project / 'later.csv')
+        >>> project: Path
+        >>> self.scan(project / 'later.csv')
         (Asset
             id: 9290baf4fb794a31a94122068108c497
             path: /tmp/tmpp_bl05lq/later.csv
@@ -252,7 +257,8 @@ class Assets(Entries[Asset]):
         Returns the directories a scan of `path` walks, each with whether it is walked
         recursively. The path is walked recursively if a recursive Dir covers it.
 
-        >>> trail.assets._reach(project / 'data')
+        >>> project: Path
+        >>> self._reach(project / 'data')
         {PosixPath('/tmp/tmpp_bl05lq/data'): True}
         """
         dirs = self._trail.dirs
@@ -301,7 +307,8 @@ class Assets(Entries[Asset]):
         directory assets are never entered. A hidden directory is entered only if a Dir sits at
         or below it.
 
-        >>> trail.assets._descends(project / '.git')
+        >>> project: Path
+        >>> self._descends(project / '.git')
         False
         """
         trail = self._trail

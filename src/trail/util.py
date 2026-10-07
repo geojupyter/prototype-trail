@@ -106,7 +106,7 @@ def lines_repr(
     """
     A header with the count, then each line indented under it.
 
-    >>> trail.markers
+    >>> lines_repr('Markers', ['./', '*.csv', 'data/*.png'])
     Markers (3)
         ./
         *.csv

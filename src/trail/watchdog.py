@@ -59,6 +59,7 @@ class Watchdog(Node):
     Observes the directories `desired` names for filesystem events. Each watch is
     non-recursive, so that `.git`, `.venv` and the inside of directory assets can be left out.
 
+    >>> trail: Trail
     >>> trail.watchdog
     Watchdog
         running: True
@@ -179,7 +180,8 @@ class Watchdog(Node):
         too, to see the Dir itself renamed. So is the parent of each asset, and the top level of
         each directory asset. With `within`, only the directories at or below it are returned.
 
-        >>> trail.watchdog.desired(project / 'data')
+        >>> project: Path
+        >>> self.desired(project / 'data')
         {PosixPath('/tmp/tmpp_bl05lq/data')}
         """
         trail = self._trail

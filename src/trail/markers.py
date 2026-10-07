@@ -43,6 +43,7 @@ def parse(
     directory is None for a root scope, and the pattern is empty for a directory marker. Raises
     ValueError for a line that is not a valid marker.
 
+    >>> project: Path
     >>> parse('data/*.png', project)
     (PosixPath('/tmp/tmpp_bl05lq/data'), '/*.png')
     >>> parse('*.csv', project)
@@ -139,6 +140,7 @@ def kind(
     'dir scope · not subfolders'. A scope starting with '!' gets ' · exclude' after it. A line
     that does not parse is 'invalid'.
 
+    >>> project: Path
     >>> kind('data/*.png', project)
     'dir scope · not subfolders'
     >>> kind('!*.tmp', project)
@@ -169,6 +171,7 @@ def slashless(
     Returns the directory a line without wildcards names, if it lacks its trailing '/'. Such a
     line tracks everything under the directory, of every type.
 
+    >>> project: Path
     >>> slashless('data', project)
     PosixPath('/tmp/tmpp_bl05lq/data')
     >>> slashless('data/', project)
@@ -208,6 +211,7 @@ def canonical(
     A single word that names an existing path is read as that path, and any other single word
     as an extension. './x' forces the path reading, and '.x' or '*.x' force the extension.
 
+    >>> project: Path
     >>> canonical('**/*.csv', project, project)
     '*.csv'
     >>> canonical('notes.md', project, project)
@@ -259,6 +263,7 @@ def canonical_path(
     resolved from `cwd`, and the rest is kept as typed. `negated` says whether the line starts
     with '!', which `body` no longer holds.
 
+    >>> project: Path
     >>> canonical_path('data', False, project, project)
     'data/'
     """
@@ -325,6 +330,7 @@ class Scopes(Sequence[str]):
     The scopes of one directory, or the root scopes, as written in `.markers`. Each line is
     held beside the pattern compiled from it. Within one Scopes, the last matching line wins.
 
+    >>> trail: Trail
     >>> trail.scopes
     Scopes (1)
         *.csv
@@ -357,7 +363,7 @@ class Scopes(Sequence[str]):
         The patterns compiled for matching. They are lowercased only here, so the lines keep
         the user's spelling.
 
-        >>> trail.dirs[project / 'data'].scopes.spec
+        >>> self.spec
         PathSpec(patterns=[GitIgnoreBasicPattern(pattern='/*.png', include=True)], backend='best')
         """
         lowered = (
@@ -372,7 +378,7 @@ class Scopes(Sequence[str]):
         Each pattern as seen from its Dir. '/*.png' reads as './*.png', and '!/a.csv' as
         '!./a.csv'.
 
-        >>> trail.dirs[project / 'data'].scopes.relative
+        >>> self.relative
         ('./*.png',)
         """
         out = []
@@ -388,7 +394,7 @@ class Scopes(Sequence[str]):
         """
         Whether any pattern reaches below the directory it belongs to. See `reaches_subfolders`.
 
-        >>> trail.dirs[project / 'data'].scopes.recursive
+        >>> self.recursive
         False
         """
         return any(
@@ -401,7 +407,7 @@ class Scopes(Sequence[str]):
         Returns the line that decides a relative path, or None if none matches. Case is
         ignored.
 
-        >>> trail.scopes.decide('sub/X.CSV')
+        >>> self.decide('sub/X.CSV')
         '*.csv'
         """
         index = self.spec.check_file(relative.lower()).index
@@ -415,6 +421,7 @@ class Text(Node):
     The `.markers` file beside the trail directory. Every change rewrites it with `compose`,
     which keeps the comments and blank lines a user writes into it.
 
+    >>> trail: Trail
     >>> trail.markers.text
     Text
         path: /tmp/tmpp_bl05lq/.markers
@@ -571,6 +578,7 @@ class Markers(
     change is written through to the file. `trail.dirs` and `trail.scopes` are built from these
     lines and are rebuilt after every change.
 
+    >>> trail: Trail
     >>> trail.markers
     Markers (3)
         ./
@@ -600,7 +608,7 @@ class Markers(
         The directory relative lines resolve against, which is the one holding `.markers`. A
         Trail without a directory uses the working directory.
 
-        >>> trail.markers.project
+        >>> self.project
         PosixPath('/tmp/tmpp_bl05lq')
         """
         directory = self._trail.dir
@@ -629,7 +637,7 @@ class Markers(
         Append the lines not yet in the file. Returns the lines added. The lines are taken as
         written. `Trail.mark` makes them canonical first.
 
-        >>> trail.markers.add('*.tif')
+        >>> self.add('*.tif')
         ['*.tif']
         """
         added = [
@@ -646,7 +654,7 @@ class Markers(
         """
         Remove every copy of each line. Returns the lines removed.
 
-        >>> trail.markers.discard('*.tif', '*.json')
+        >>> self.discard('*.tif', '*.json')
         ['*.tif']
         """
         removed = [
@@ -702,7 +710,7 @@ class Markers(
         a directory asset. When `.markers` was imported, each anchored line is reported too,
         since it resolves against this project.
 
-        >>> trail.markers.warnings
+        >>> self.warnings
         ["/tmp/tmpp_bl05lq/.markers:4: Not a marker: '!'"]
         """
         project = self.project

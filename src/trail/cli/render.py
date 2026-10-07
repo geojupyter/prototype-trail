@@ -271,7 +271,7 @@ class Renderer(Node):
         Returns the path with the home directory shortened to `~`. Paths outside the home
         directory are returned unchanged.
 
-        >>> self.home(Path('/home/user/project'))
+        >>> Renderer.home(Path('/home/user/project'))
         '~/project'
         """
         try:

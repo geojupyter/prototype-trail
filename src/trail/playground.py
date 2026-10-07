@@ -352,6 +352,7 @@ class Playground(Dir):
     takes a path. A playground which made its own directory sweeps it up when it is collected or
     when the process exits; one given a directory leaves it alone until it is asked to remove it.
 
+    >>> playground: Playground
     >>> playground
     Playground
         path: '/dev/shm/playground-_6oh8mig'

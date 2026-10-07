@@ -72,6 +72,7 @@ class Trail(Node):
     names, and the events that happened to both. The `.markers` file says which directories
     are watched and which files in them are tracked automatically.
 
+    >>> trail: Trail
     >>> trail
     Trail
         id: 7cdc235fe92941d492b5c5f348484da3
@@ -300,7 +301,8 @@ class Trail(Node):
         Track each path as an asset. A directory is tracked whole, as a directory asset, and its
         inside is never walked. One path returns its asset, and several return a list.
 
-        >>> trail.track(project / 'notes.md')
+        >>> project: Path
+        >>> self.track(project / 'notes.md')
         Asset
             id: 80438f85c910427d9001617c47b7507b
             path: /tmp/tmpp_bl05lq/notes.md
@@ -382,7 +384,7 @@ class Trail(Node):
         from `cwd`, the project directory by default, as the lines of `.markers` are. A line
         already in `.markers` is not added again. Returns the lines added.
 
-        >>> trail.mark('zarr')
+        >>> self.mark('zarr')
         ['*.zarr']
         """
         lines = self._canonical(texts, cwd)
@@ -417,7 +419,7 @@ class Trail(Node):
         assets a removed line matched stay tracked, and a warning says how many. `offtrail`
         removes them. Returns the lines removed.
 
-        >>> trail.unmark('.zarr')
+        >>> self.unmark('.zarr')
         <stdin>:1: UserWarning: unmarking '*.zarr' leaves 1 asset tracked; offtrail removes it
         ['*.zarr']
         """
@@ -478,7 +480,7 @@ class Trail(Node):
         Returns how many tracked assets each line accounts for. A scope counts the assets it
         decides. A directory marker counts the assets beneath it.
 
-        >>> trail._matched(['./', '*.csv'])
+        >>> self._matched(['./', '*.csv'])
         Counter({'./': 4, '*.csv': 1})
         """
         project = self.markers.project
@@ -560,7 +562,7 @@ class Trail(Node):
         """
         Returns the asset or the Dir with an id, or None if neither holds it.
 
-        >>> trail._entry('04e15251538241309989553fb4672653')
+        >>> self._entry('04e15251538241309989553fb4672653')
         Dir
             id: 04e15251538241309989553fb4672653
             path: /tmp/tmpp_bl05lq

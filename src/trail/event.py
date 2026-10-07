@@ -38,6 +38,7 @@ class Get:
         """
         Returns the event's attribute, or None if the event has no such field.
 
+        >>> trail: Trail
         >>> trail.events.select[2].get.rule
         '*.csv'
         >>> trail.events.select[2].get.event_type
@@ -162,6 +163,7 @@ class AddAssetEvent(Event):
     `rule` is the line of `.markers` that picked the resource up, or None if it was tracked
     explicitly.
 
+    >>> trail: Trail
     >>> trail.events.select[2:3]
     Events (1)
         0. AddAssetEvent
@@ -225,6 +227,7 @@ class RemoveAssetEvent(Event):
     An asset being offtrailed. Its path is remembered as offtrailed, so `.markers` does not
     pick it up again.
 
+    >>> trail: Trail
     >>> trail.events.select[-1:]
     Events (1)
         0. RemoveAssetEvent
@@ -264,6 +267,7 @@ class AddDirEvent(Event):
     A directory becoming a Dir, since a line of `.markers` names it. `rule` is the first line
     that names it. The Dir's root and scopes are not logged, since `.markers` holds them.
 
+    >>> trail: Trail
     >>> trail.events.select[:1]
     Events (1)
         0. AddDirEvent
@@ -299,6 +303,7 @@ class RemoveDirEvent(Event):
     """
     A Dir that no line of `.markers` names any more. Its ID stays in the log, with its history.
 
+    >>> trail: Trail
     >>> trail.unmark('raw/')
     ['raw/']
     >>> trail.events.select[-1:]
@@ -336,6 +341,7 @@ class WatchdogEvent(Event):
     A filesystem event on a tracked asset, or on a Dir's own directory. Events on other paths
     are not recorded. The watchdog decides whether such a path should be tracked.
 
+    >>> trail: Trail
     >>> trail.events.select[-1:]
     Events (1)
         0. WatchdogEvent
@@ -636,6 +642,7 @@ class Events(Collection[str, Event]):
     """
     A collection of Event objects that have occurred in a Trail, about its assets and Dirs.
 
+    >>> trail: Trail
     >>> trail.events.select[1:3]
     Events (2)
         0. AddDirEvent

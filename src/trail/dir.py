@@ -21,6 +21,8 @@ class Dir(Entry):
     and scopes are taken from `.markers` each time the lines change. A root takes the root
     scopes at any depth beneath it. Its own scopes are shown relative to it.
 
+    >>> trail: Trail
+    >>> project: Path
     >>> trail.dirs[project / 'data']
     Dir
         id: 3a654b91eb2047b3a2718d7f1d6a03e1
@@ -71,7 +73,7 @@ class Dir(Entry):
         Whether anything below the directory's own files may be tracked through it. A root is
         recursive, and so is a Dir with a scope such as `./**/*.tif`.
 
-        >>> trail.dirs[project / 'data'].recursive
+        >>> self.recursive
         False
         """
         return (
@@ -84,7 +86,8 @@ class Dir(Entry):
         Returns the line among the Dir's own scopes that decides a path below it, or None.
         Case is ignored.
 
-        >>> trail.dirs[project / 'data'].decide(project / 'data' / 'B.PNG')
+        >>> project: Path
+        >>> self.decide(project / 'data' / 'B.PNG')
         'data/*.png'
         """
         return self.scopes.decide(path.relative_to(self.path).as_posix())
@@ -101,6 +104,7 @@ def build(
     directories in `excluded`, containers and directories inside containers, since the inside
     of a directory asset is never walked.
 
+    >>> project: Path
     >>> build(['./', '*.csv', 'data/*.png'], project)[1]
     Scopes (1)
         *.csv
@@ -159,6 +163,10 @@ def match(
     the path's parents are checked first, deepest first, the way git ranks nested .gitignore
     files. If none decides, the root scopes are checked beneath the nearest root.
 
+    >>> trail: Trail
+    >>> project: Path
+    >>> dirs = trail.dirs.path2entry
+    >>> scopes = trail.dirs.scopes
     >>> match(project / 'data' / 'a.png', dirs, scopes)
     'data/*.png'
     """
@@ -187,6 +195,7 @@ class Dirs(Entries[Dir]):
     own, so this is not the set of watched directories. `refresh` keeps the Dirs in line with
     `.markers`, logging each Dir that comes or goes.
 
+    >>> trail: Trail
     >>> trail.dirs
     Dirs (2)
         0. Dir
@@ -298,7 +307,8 @@ class Dirs(Entries[Dir]):
         """
         Returns the line of `.markers` that decides a path, or None if none does. See `match`.
 
-        >>> trail.dirs.match(project / 'data' / 'b.png')
+        >>> project: Path
+        >>> self.match(project / 'data' / 'b.png')
         'data/*.png'
         """
         return match(path, self.path2entry, self.scopes)
@@ -308,7 +318,8 @@ class Dirs(Entries[Dir]):
         Whether `.markers` says to track the path. It does if a line other than an exclusion
         decides it.
 
-        >>> trail.dirs.tracks(project / 'notes.md')
+        >>> project: Path
+        >>> self.tracks(project / 'notes.md')
         False
         """
         line = self.match(path)
