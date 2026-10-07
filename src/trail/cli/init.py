@@ -7,7 +7,7 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Final
 
-from prompt_toolkit import PromptSession, print_formatted_text, prompt
+from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import (
@@ -35,8 +35,6 @@ from prompt_toolkit.layout import (
     Window,
 )
 from prompt_toolkit.layout.processors import BeforeInput
-from prompt_toolkit.shortcuts import choice
-from prompt_toolkit.validation import Validator
 
 from trail.cli.console import Console
 from trail.cli.render import Renderer
@@ -106,107 +104,6 @@ def tabbing() -> KeyBindings:
             buffer.start_completion(select_first=False)
 
     return bindings
-
-
-def expand(
-        text: str,
-        root: Path,
-) -> Path:
-    """
-    Returns the typed path resolved against `root`. A path to a `.trail` directory returns its
-    project directory instead.
-    """
-    path = (root / Path(text.strip()).expanduser()).resolve()
-    if path.name == ".trail":
-        path = path.parent
-    return path
-
-
-def respecify(
-        suggested: Path,
-        root: Path,
-) -> Path:
-    """
-    Prompt for the Trail directory, starting from `suggested`. Only directories are completed
-    and accepted. <UP> replaces the text with its parent directory.
-    """
-    bindings = KeyBindings()
-
-    # the arrow climbs to the parent, unless it is moving through completions
-    @bindings.add("up", filter=~has_completions)
-    def _up(event: KeyPressEvent) -> None:
-        buffer = event.current_buffer
-        try:
-            parent = expand(buffer.text, root).parent
-        except RuntimeError:
-            return
-        buffer.document = Document(str(parent))
-
-    @bindings.add(Keys.BracketedPaste)
-    def _paste(event: KeyPressEvent) -> None:
-        event.current_buffer.insert_text(Console.pasted(event.data))
-
-    def valid(text: str) -> bool:
-        # '~nobody' raises rather than expanding, and a NUL raises on the stat
-        try:
-            return expand(text, root).is_dir()
-        except (RuntimeError, ValueError):
-            return False
-
-    validator = Validator.from_callable(
-        valid,
-        error_message="not a directory",
-        move_cursor_to_end=True,
-    )
-    completer = Paths(
-        only_directories=True,
-        expanduser=True,
-        get_paths=lambda: [str(root)],
-    )
-    text = prompt(
-        "  Trail directory: ",
-        default=str(suggested),
-        key_bindings=merge_key_bindings([bindings, tabbing()]),
-        completer=completer,
-        validator=validator,
-        validate_while_typing=False,
-    )
-    return expand(text, root)
-
-
-def directory(
-        suggested: Path,
-        root: Path,
-) -> Path:
-    """
-    Ask whether `suggested` is the Trail directory, and prompt for another if not. Prints a
-    note when the chosen directory already has a Trail, or is inside another Trail.
-
-       >  1. Yes!!!
-          2. No, let me respecify:
-    Re-initializing the Trail at ~/project; its log is kept.
-    """
-    say(f"Is {Renderer.home(suggested)} your intended Trail directory?", "bold")
-    hint(
-        "By default, Trail tracks any relevant assets in this directory or subdirectories.",
-        "You can set up Trail to track external directories and assets later.",
-        "Running Trail in this directory or subdirectories will restart the same Trail.",
-    )
-    options = [
-        (True, "Yes!!!"),
-        (False, "No, let me respecify:"),
-    ]
-    if choice("", options=options, default=True, style=STYLE):
-        home = suggested
-    else:
-        home = respecify(suggested, root)
-    enclosing = Trail.locate(home)
-    if enclosing == home / ".trail":
-        say(f"Re-initializing the Trail at {Renderer.home(home)}; its log is kept.", "class:info")
-    elif enclosing is not None:
-        outer = Renderer.home(enclosing.parent)
-        say(f"This Trail will nest inside the one at {outer}.", "class:info")
-    return home
 
 
 class Picker:
@@ -1150,9 +1047,9 @@ def init(root: Path) -> Trail:
     """
     existing = Trail.locate(root)
     if existing is None:
-        suggested = root
+        home = root
     else:
-        suggested = existing.parent
+        home = existing.parent
 
     say("")
     say("🌲 Welcome to Trail! 🌳", "bold")
@@ -1163,9 +1060,8 @@ def init(root: Path) -> Trail:
     say(f"Read more at {WEBSITE}", "class:info")
     say("")
     say("Let's start a Trail! 🥾", "bold")
-    say("")
-
-    home = directory(suggested, root)
+    if existing is not None:
+        say(f"Re-initializing the Trail at {Renderer.home(home)}; its log is kept.", "class:info")
     say("")
 
     path = home / ".markers"

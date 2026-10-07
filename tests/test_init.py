@@ -86,7 +86,7 @@ class TestInit:
 
     def test_accepting_every_default_starts_a_trail_with_the_default_markers(self) -> None:
         with self.workspace() as root:
-            trail = self.run(root, ENTER, ENTER, ENTER)
+            trail = self.run(root, ENTER, ENTER)
             assert trail.dir == root / ".trail"
             default = (MARKERS / "default.txt").read_text(encoding="utf-8")
             assert (root / ".markers").read_text(encoding="utf-8") == default
@@ -96,45 +96,9 @@ class TestInit:
             assert root / "folder" / "nested.csv" in trail.assets
             assert root / "notes.md" not in trail.assets
 
-    def test_the_arrow_climbs_to_the_parent_directory(self) -> None:
-        with self.workspace() as root:
-            trail = self.run(root, "2", ENTER, UP, ENTER, ENTER, ENTER)
-            assert trail.dir == root.parent / ".trail"
-            assert not (root / ".trail").exists()
-            assert root / "top.csv" in trail.assets
-
-    def test_a_typed_directory_replaces_the_suggestion(self) -> None:
-        with self.workspace() as root:
-            other = root.parent / "other"
-            other.mkdir()
-            trail = self.run(
-                root,
-                "2",
-                ENTER,
-                # refused, since it is not a directory, and typed over
-                DISCARD,
-                "missing",
-                ENTER,
-                DISCARD,
-                str(other),
-                ENTER,
-                ENTER,
-                ENTER,
-            )
-            assert trail.dir == other / ".trail"
-            assert not (root / ".trail").exists()
-
-    def test_a_directory_nested_in_a_trail_starts_its_own(self) -> None:
-        with self.workspace() as root:
-            Trail(root)
-            folder = root / "folder"
-            trail = self.run(folder, "2", ENTER, DISCARD, str(folder), ENTER, ENTER, ENTER)
-            assert trail.dir == folder / ".trail"
-            assert Trail.locate(folder) == folder / ".trail"
-
     def test_escape_turns_down_the_default_markers(self) -> None:
         with self.workspace() as root:
-            trail = self.run(root, ENTER, ESCAPE, "./", ENTER, "md", ENTER, ENTER)
+            trail = self.run(root, ESCAPE, "./", ENTER, "md", ENTER, ENTER)
             assert list(trail.markers) == ["./", "*.md"]
             assert (root / ".markers").read_text(encoding="utf-8") == "./\n*.md\n"
             assert root / "notes.md" in trail.assets
@@ -144,7 +108,7 @@ class TestInit:
         with self.workspace() as root, TemporaryDirectory() as elsewhere:
             source = Path(elsewhere) / "mine.markers"
             source.write_text("# mine\n./\n*.md\n", encoding="utf-8")
-            trail = self.run(root, ENTER, str(source), ENTER, ENTER)
+            trail = self.run(root, str(source), ENTER, ENTER)
             assert (root / ".markers").read_text(encoding="utf-8") == "# mine\n./\n*.md\n"
             assert root / "notes.md" in trail.assets
             assert root / "top.csv" not in trail.assets
@@ -152,19 +116,18 @@ class TestInit:
     def test_a_typed_directory_offers_the_markers_inside_it(self) -> None:
         with self.workspace() as root, TemporaryDirectory() as elsewhere:
             (Path(elsewhere) / ".markers").write_text("./\n*.md\n", encoding="utf-8")
-            trail = self.run(root, ENTER, elsewhere, ENTER, ENTER)
+            trail = self.run(root, elsewhere, ENTER, ENTER)
             assert list(trail.markers) == ["./", "*.md"]
 
     def test_an_arrow_after_typing_returns_to_the_markers_files(self) -> None:
         with self.workspace() as root:
-            trail = self.run(root, ENTER, "missing", UP, ENTER, ENTER)
+            trail = self.run(root, "missing", UP, ENTER, ENTER)
             assert list(trail.markers) == self.default()
 
     def test_lines_toggle_in_canonical_form(self) -> None:
         with self.workspace() as root:
             trail = self.run(
                 root,
-                ENTER,
                 ESCAPE,
                 "./",
                 ENTER,
@@ -183,7 +146,7 @@ class TestInit:
 
     def test_an_invalid_line_is_refused_without_ending_the_step(self) -> None:
         with self.workspace() as root:
-            trail = self.run(root, ENTER, ESCAPE, "!", ENTER, "./", ENTER, "md", ENTER, ENTER)
+            trail = self.run(root, ESCAPE, "!", ENTER, "./", ENTER, "md", ENTER, ENTER)
             assert list(trail.markers) == ["./", "*.md"]
 
     def test_entered_paths_become_lines(self) -> None:
@@ -193,7 +156,6 @@ class TestInit:
             (outside / "kept.md").write_text("a\n", encoding="utf-8")
             trail = self.run(
                 root,
-                ENTER,
                 ENTER,
                 "notes.md",
                 ENTER,
@@ -221,7 +183,6 @@ class TestInit:
             trail = self.run(
                 root,
                 ENTER,
-                ENTER,
                 str(outside / "kept.md"),
                 ENTER,
                 str(outside),
@@ -242,7 +203,7 @@ class TestInit:
             (root / "other.md").write_text("a\n", encoding="utf-8")
             paste = "\x1b[200~notes.md   \r\nother.md\r\n*.csv\r\n\x1b[201~"
             single = "\x1b[200~*.txt\x1b[201~"
-            trail = self.run(root, ENTER, ENTER, paste, ENTER, single, ENTER, ENTER)
+            trail = self.run(root, ENTER, paste, ENTER, single, ENTER, ENTER)
             assert root / "notes.md" in trail.assets
             assert root / "other.md" in trail.assets
             # the lines already listed stay, rather than being toggled off
@@ -252,10 +213,10 @@ class TestInit:
     def test_right_and_left_choose_what_the_arrows_scroll(self) -> None:
         with self.workspace() as root:
             # scrolling the default file's lines leaves the default chosen
-            trail = self.run(root, ENTER, RIGHT, DOWN, DOWN, ENTER, ENTER)
+            trail = self.run(root, RIGHT, DOWN, DOWN, ENTER, ENTER)
             assert list(trail.markers) == self.default()
         with self.workspace() as root:
-            trail = self.run(root, ENTER, RIGHT, DOWN, LEFT, DOWN, ENTER, ENTER)
+            trail = self.run(root, RIGHT, DOWN, LEFT, DOWN, ENTER, ENTER)
             assert list(trail.markers) == (
                 (MARKERS / "geospatial.txt").read_text(encoding="utf-8").splitlines()
             )
@@ -265,7 +226,7 @@ class TestInit:
             (root / ".markers").write_text("# mine\n./\n*.md\n", encoding="utf-8")
             first = Trail(root)
             events = len(first.events)
-            trail = self.run(root / "folder", ENTER, ENTER, ENTER)
+            trail = self.run(root / "folder", ENTER, ENTER)
             assert trail.dir == root / ".trail"
             assert trail.id == first.id
             assert len(trail.events) >= events
@@ -278,13 +239,13 @@ class TestInit:
         with self.workspace() as root:
             (root / ".markers").write_text("# mine\n./\n*.md\n", encoding="utf-8")
             Trail(root)
-            self.run(root, ENTER, ".markers", ENTER, ENTER)
+            self.run(root, ".markers", ENTER, ENTER)
             assert (root / ".markers").read_text(encoding="utf-8") == "# mine\n./\n*.md\n"
 
     def test_escape_with_nothing_added_leaves_a_blank_markers_file(self) -> None:
         with self.workspace() as root:
             (root / ".markers").write_text("# mine\n./\n*.md\n", encoding="utf-8")
-            trail = self.run(root, ENTER, ESCAPE, ENTER)
+            trail = self.run(root, ESCAPE, ENTER)
             assert (root / ".markers").read_text(encoding="utf-8") == ""
             assert not trail.markers
             assert not trail.dirs
@@ -295,7 +256,6 @@ class TestInit:
             (root / "folder" / "deep.md").write_text("a\n", encoding="utf-8")
             trail = self.run(
                 root,
-                ENTER,
                 ESCAPE,
                 "./fol",
                 TAB,
@@ -310,14 +270,14 @@ class TestInit:
     def test_an_interrupt_writes_nothing(self) -> None:
         with self.workspace() as root:
             with pytest.raises(KeyboardInterrupt):
-                self.run(root, ENTER, ENTER, "md", ENTER, INTERRUPT)
+                self.run(root, ENTER, "md", ENTER, INTERRUPT)
             assert not (root / ".trail").exists()
             assert not (root / ".markers").exists()
 
     def test_an_interrupt_in_the_picker_writes_nothing(self) -> None:
         with self.workspace() as root:
             with pytest.raises(KeyboardInterrupt):
-                self.run(root, ENTER, INTERRUPT)
+                self.run(root, INTERRUPT)
             assert not (root / ".trail").exists()
 
 
