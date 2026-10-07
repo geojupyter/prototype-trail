@@ -112,13 +112,13 @@ class Picker:
     listed on the left, with a preview of the selected one on the right. A typed path loads a
     markers file of the user's own.
 
-    <UP> and <DOWN> move through the list. <RIGHT> moves the arrows into the preview to scroll
-    the file, and <LEFT> moves them back. Typing a path previews that file instead. <ENTER>
+    <UP> and <DOWN> move through the list. A file longer than the preview is cut off, since
+    the editor that follows shows every line. Typing a path previews that file instead. <ENTER>
     chooses the previewed file, and <ESCAPE> chooses none.
     """
 
     # terminal rows left to the question and its hints above the picker
-    margin = 9
+    margin = 14
 
     def __init__(
         self,
@@ -128,20 +128,11 @@ class Picker:
         self.options = options
         self.root = root
         self.index = 0
-        # the first row of the file the preview shows
-        self.offset = 0
-        # the row of the file the cursor is on while reading it
-        self.line = 0
-        # whether the arrows move through the file rather than the listing
-        self.reading = False
         self.error = ""
 
     @cached_property
     def buffer(self) -> Buffer:
-        """
-        Returns the path input below the list. Editing it clears any error and scrolls the
-        preview back to the top.
-        """
+        """Returns the path input below the list. Editing it clears any error."""
         completer = Paths(
             expanduser=True,
             get_paths=lambda: [str(self.root)],
@@ -154,8 +145,6 @@ class Picker:
 
     def _changed(self, buffer: Buffer) -> None:
         self.error = ""
-        self.offset = 0
-        self.line = 0
 
     @property
     def typed(self) -> str:
@@ -189,35 +178,13 @@ class Picker:
             return None
         return self.options[self.index][1]
 
-    def move(self, step: int) -> None:
-        """Move the cursor in the preview while reading, or in the list otherwise."""
-        if self.reading:
-            self.browse(step)
-        else:
-            self.scroll(step)
-
     def scroll(self, step: int) -> None:
-        """Move the list selection by `step`, and show the new file from the top."""
+        """Move the list selection by `step`."""
         # the first press after typing gives the listing back rather than moving through it
         if self.buffer.text:
             self.buffer.text = ""
             return
-        index = max(0, min(len(self.options) - 1, self.index + step))
-        if index != self.index:
-            self.index = index
-            self.offset = 0
-            self.line = 0
-
-    def browse(self, step: int) -> None:
-        """Move the preview cursor by `step`, and scroll the preview to keep it in view."""
-        rows = len(self._content())
-        self.line = max(0, min(rows - 1, self.line + step))
-        # the preview follows the cursor out of either end
-        viewport = self.viewport
-        if self.line < self.offset:
-            self.offset = self.line
-        elif self.line >= self.offset + viewport:
-            self.offset = self.line - viewport + 1
+        self.index = max(0, min(len(self.options) - 1, self.index + step))
 
     def accept(self) -> tuple[str, list[str]] | None:
         """
@@ -260,7 +227,7 @@ class Picker:
     def _listing(self) -> StyleAndTextTuples:
         """
         Returns the list of markers files with the selected one highlighted. The highlight is
-        plain bold while reading the preview, and hidden while a path is typed.
+        hidden while a path is typed.
         """
         out: StyleAndTextTuples = []
         for index, (label, _) in enumerate(self.options):
@@ -272,10 +239,7 @@ class Picker:
             ):
                 # scrolls the window to the cursor once there are more files than rows
                 out.append(("[SetCursorPosition]", ""))
-                if self.reading:
-                    out.append(("bold", f"  > {label}"))
-                else:
-                    out.append(("class:selected-option", f"  > {label}"))
+                out.append(("class:selected-option", f"  > {label}"))
             else:
                 out.append(("", f"    {label}"))
         return out
@@ -302,19 +266,17 @@ class Picker:
 
     def _preview(self) -> StyleAndTextTuples:
         """
-        Returns the visible part of the preview. A rule on the left shows ↑ or ↓ when the file
-        continues above or below. While reading, the cursor line is drawn in reverse video.
+        Returns the top of the preview, as much as fits. A file that runs on past it ends in a
+        count of the lines cut off.
         """
         rows = self._content()
-        # the cursor is drawn as wide as the longest line, so that it shows on a blank one too
-        width = max(
-            len(text)
-            for _, text in rows
-        )
         viewport = self.viewport
-        last = max(0, len(rows) - viewport)
-        offset = min(self.offset, last)
-        shown = rows[offset:offset + viewport]
+        if len(rows) > viewport:
+            hidden = len(rows) - viewport + 1
+            shown = rows[:viewport - 1]
+            shown.append(("class:info", f"… {hidden} more lines"))
+        else:
+            shown = rows
         # padded to the viewport, so that the rule down the side runs the full height
         shown.extend(
             ("", "")
@@ -324,26 +286,8 @@ class Picker:
         for index, (style, text) in enumerate(shown):
             if index:
                 out.append(("", "\n"))
-            # the rule doubles as the scrollbar, pointing to where the file runs on
-            if (
-                index == 0
-                and offset > 0
-            ):
-                out.append(("class:info", " ↑ "))
-            elif (
-                index == viewport - 1
-                and offset < last
-            ):
-                out.append(("class:info", " ↓ "))
-            else:
-                out.append(("class:info", " │ "))
-            if (
-                self.reading
-                and offset + index == self.line
-            ):
-                out.append((f"{style} reverse", text.ljust(max(width, 1))))
-            else:
-                out.append((style, text))
+            out.append(("class:info", " │ "))
+            out.append((style, text))
         return out
 
     @cached_property
@@ -365,8 +309,8 @@ class Picker:
     def viewport(self) -> int:
         """
         Returns the height of the list and the preview. It fits the longest file, so the
-        picker does not resize while scrolling. It never exceeds the terminal rows left below
-        the question.
+        picker does not resize while moving through the list. It never exceeds the terminal
+        rows left below the question.
         """
         longest = max(self.depth, len(self._content()))
         rows = get_app().output.get_size().rows
@@ -440,20 +384,11 @@ class Picker:
 
         @bindings.add("up", filter=idle)
         def _up(event: KeyPressEvent) -> None:
-            self.move(-1)
+            self.scroll(-1)
 
         @bindings.add("down", filter=idle)
         def _down(event: KeyPressEvent) -> None:
-            self.move(1)
-
-        # once a path is typed, left and right move through it instead
-        @bindings.add("left", filter=idle & empty)
-        def _left(event: KeyPressEvent) -> None:
-            self.reading = False
-
-        @bindings.add("right", filter=idle & empty)
-        def _right(event: KeyPressEvent) -> None:
-            self.reading = True
+            self.scroll(1)
 
         # a completion under the cursor already stands in the buffer; enter keeps it
         @bindings.add("enter", filter=has_completions)
@@ -684,7 +619,7 @@ class Editor:
     """
 
     # terminal rows left to the hints, the notes and the prompt around the list
-    margin = 14
+    margin = 11
     # files walked for the live counts before they are shown as a lower bound
     limit = 20000
 
@@ -1059,19 +994,27 @@ def init(root: Path) -> Trail:
     say("can retrace your project's steps.")
     say(f"Read more at {WEBSITE}", "class:info")
     say("")
-    say("Let's start a Trail! 🥾", "bold")
+    say("🎒 Let's start a Trail! 🥾", "bold")
     if existing is not None:
-        say(f"Re-initializing the Trail at {Renderer.home(home)}; its log is kept.", "class:info")
+        say(f"Re-initializing the Trail at {Renderer.home(home)}", "class:info")
     say("")
 
     path = home / ".markers"
-    say("Markers say which directories to watch and which files to track in them. 🪧", "bold")
+    say("Markers say which folders to check and which files to automatically track in them. 🪧", "bold")
     hint(
-        "Scroll and press <ENTER> to choose a marker set. 🪨",
-        "Press <RIGHT> to scroll through a set's lines, and <LEFT> to return to the sets.",
-        "Enter a path to load a markers file of your own.",
-        "Press <ESCAPE> to start empty and track only what you add yourself.",
-        "Next, you can add and remove lines one by one.",
+        "A line ending in `/` is a folder to track.",
+        "A line with an extension like `*.csv` tracks those files in the tracked folders.",
+        "A combination e.g. `data/*.png` tracks extensions under specific folders.",
+        "A line starting with `!` e.g. `!requirements.txt` excludes that pattern from tracking.",
+        "A line with `./` tracks the project directory itself.",
+    )
+    say("")
+    say("Let's pick a marker set to start from 🪨:", "bold")
+    hint(
+        "<UP> and <DOWN> to browse marker sets.",
+        "<ENTER> to choose one.",
+        "Enter a path to load your own markers file.",
+        "<ESCAPE> to start with no markers.",
     )
     say("")
     picker = Picker(offer(), root)
@@ -1086,15 +1029,12 @@ def init(root: Path) -> Trail:
     imported = picker.custom not in (None, path)
     say("")
 
-    say("Here's what Trail will watch and track 🏷️:", "bold")
+    say("Now let's edit the markers 🏷️:", "bold")
     hint(
-        "A line ending in '/' is a directory to watch, subfolders included; './' is this one.",
-        "A line like '*.csv' tracks those files in every watched directory, at any depth.",
-        "'data/*.png' tracks the png files directly in data; 'data/**/*.png' reaches subfolders.",
-        "Start a line with '!' to leave files out, as in '!requirements*.txt'.",
-        "Type a line to add it, or type it again to remove it. <TAB> completes.",
-        "<UP> picks a line and <ENTER> removes it. <ENTER> on an empty prompt continues.",
-        "You can always edit `.markers` afterward, or use `mark` and `unmark` in the console.",
+        "<UP> and <DOWN> to select markers.",
+        "<ENTER> to delete a selected marker.",
+        "<ESCAPE> to deselect a marker.",
+        "<TAB> to autocomplete a typed marker.",
     )
     say("")
     rows = Editor(Text.markers(lines), home, root, imported).run()
