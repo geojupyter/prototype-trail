@@ -1,21 +1,14 @@
 from __future__ import annotations
 
-from collections import Counter
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Sequence
 from functools import cached_property
 from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Final
 
-from prompt_toolkit import PromptSession, print_formatted_text
+from prompt_toolkit import print_formatted_text
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import (
-    CompleteEvent,
-    Completer,
-    Completion,
-)
-from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_completions
 from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
 from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
@@ -38,28 +31,21 @@ from prompt_toolkit.layout.processors import BeforeInput
 
 from trail.cli.console import Console
 from trail.cli.render import Renderer
-from trail.cli.scopes import Paths, completer
-from trail.cli.theme import PROMPT, STYLE
-from trail.dir import build, match
+from trail.cli.scopes import Paths
+from trail.cli.theme import STYLE
 from trail.markers import (
     MARKERS,
-    Text,
     available,
-    canonical,
     kind,
-    parse,
-    slashless,
 )
 from trail.trail import Trail
-from trail.util import container, plural, walk
+from trail.util import plural
 
 __all__ = [
-    "Editor",
     "Paths",
     "Picker",
     "init",
     "offer",
-    "tally",
 ]
 
 WEBSITE: Final = "https://geojupyter.github.io/trail"
@@ -108,17 +94,17 @@ def tabbing() -> KeyBindings:
 
 class Picker:
     """
-    Lets the user choose the markers file a new `.markers` starts from. The bundled files are
+    Lets the user choose the markers file `.markers` is copied from. The bundled files are
     listed on the left, with a preview of the selected one on the right. A typed path loads a
     markers file of the user's own.
 
-    <UP> and <DOWN> move through the list. A file longer than the preview is cut off, since
-    the editor that follows shows every line. Typing a path previews that file instead. <ENTER>
-    chooses the previewed file, and <ESCAPE> chooses none.
+    <UP> and <DOWN> move through the list. A file longer than the preview is cut off. Typing a
+    path previews that file instead. <ENTER> chooses the previewed file, and <ESCAPE> chooses
+    none.
     """
 
     # terminal rows left to the question and its hints above the picker
-    margin = 14
+    margin = 15
 
     def __init__(
         self,
@@ -460,509 +446,6 @@ def offer() -> list[tuple[str, Traversable]]:
     return out
 
 
-class Asked(Completer):
-    """
-    Wraps a completer so it offers nothing for an empty word unless <TAB> is pressed. Without
-    this, every submission empties the prompt and would pop up the full list again.
-    """
-
-    def __init__(self, completer: Completer) -> None:
-        self.completer = completer
-
-    def get_completions(
-        self,
-        document: Document,
-        complete_event: CompleteEvent,
-    ) -> Iterator[Completion]:
-        word = document.get_word_before_cursor(WORD=True)
-        if (
-            not word
-            and not complete_event.completion_requested
-        ):
-            return
-        yield from self.completer.get_completions(document, complete_event)
-
-
-def ask(
-        message: Callable[[], StyleAndTextTuples],
-        request: Callable[[], str],
-        submit: Callable[[str], None],
-        completer: Completer,
-        multiline: bool = False,
-        extra: KeyBindings | None = None,
-) -> None:
-    """
-    Run a prompt that stays open across submissions. Each submission is passed to `submit` and
-    the prompt is cleared. `message` shows the current state and is redrawn in place. `request`
-    is the instruction shown above the cursor.
-
-    An empty submission closes the prompt. It is also passed to `submit`, so old notes are
-    cleared before `message` is printed one last time. Bindings in `extra` take priority over
-    the default <ENTER> binding.
-    """
-    bindings = KeyBindings()
-
-    @bindings.add("enter")
-    def _(event: KeyPressEvent) -> None:
-        buffer = event.current_buffer
-        submit(buffer.text)
-        if buffer.text.strip():
-            buffer.reset()
-        else:
-            buffer.validate_and_handle()
-
-    # the last binding matching a key is the one that handles it
-    merged = [bindings, tabbing()]
-    if extra is not None:
-        merged.append(extra)
-    bindings = merge_key_bindings(merged)
-
-    def framed() -> StyleAndTextTuples:
-        out = message()
-        out.append(("", f"  {request()}\n"))
-        out.append(("class:echo.prompt", f"  {PROMPT}"))
-        return out
-
-    # the request and the cursor are spent once the prompt closes, so the prompt is erased and
-    # only what the submissions made is left on screen
-    session = PromptSession(erase_when_done=True, style=STYLE)
-    # multiline only so that a paste keeps its lines; typed, enter submits
-    session.prompt(
-        framed,
-        key_bindings=bindings,
-        completer=Asked(completer),
-        multiline=multiline,
-        prompt_continuation=" " * (2 + len(PROMPT)),
-    )
-    print_formatted_text(FormattedText(message()), style=STYLE, end="")
-
-
-def tally(
-        rows: Sequence[str],
-        project: Path,
-        limit: int,
-) -> tuple[Counter[str], bool]:
-    """
-    Returns how many files each row tracks now, and whether the walk stopped after `limit`
-    files. A scope counts the files it decides, and an exclusion counts the files it leaves
-    out. A root counts the files tracked beneath it.
-
-    >>> tally(['./', '*.csv', 'data/*.png'], project, 20000)
-    (Counter({'./': 3, '*.csv': 2, 'data/*.png': 1}), False)
-    """
-    dirs, scopes = build(rows, project)
-    roots: dict[Path, list[str]] = {}
-    for row in rows:
-        try:
-            base, pattern = parse(row, project)
-        except ValueError:
-            continue
-        if (
-            base is not None
-            and not pattern
-        ):
-            roots.setdefault(base, []).append(row)
-    metadata = project / ".trail"
-
-    def descends(path: Path) -> bool:
-        # the walk a scan makes, without the assets a Trail would already hold
-        if (
-            path.is_symlink()
-            or path.is_relative_to(metadata)
-            or container(path)
-        ):
-            return False
-        return (
-            not path.name.startswith(".")
-            or any(
-                directory.is_relative_to(path)
-                for directory in dirs
-            )
-        )
-
-    walks = {
-        path: directory.recursive
-        for path, directory in dirs.items()
-    }
-    out: Counter[str] = Counter()
-    for seen, path in enumerate(walk(walks, descends), start=1):
-        if seen > limit:
-            return out, True
-        if path.is_relative_to(metadata):
-            continue
-        line = match(path, dirs, scopes)
-        if line is None:
-            continue
-        out[line] += 1
-        if line.startswith("!"):
-            continue
-        for parent in path.parents:
-            for root in roots.get(parent, ()):
-                out[root] += 1
-    return out, False
-
-
-class Editor:
-    """
-    The list of lines the new `.markers` will hold. Each row shows its kind and how many files
-    it tracks now.
-
-    <UP> and <DOWN> select a row, and <ENTER> removes it. A typed line is added, or removed if
-    it is already listed. Lines are compared in canonical form, so typing `.csv` removes
-    `*.csv`. A paste only adds. <TAB> completes paths, extensions and the listed rows.
-
-      ./          root                        3 files now
-      *.csv       root scope                  2 files now
-      data/       root                        covered by ./
-    > data/*.png  dir scope · not subfolders  1 file now
-      !*.tmp      root scope · exclude        0 files excluded
-    """
-
-    # terminal rows left to the hints, the notes and the prompt around the list
-    margin = 11
-    # files walked for the live counts before they are shown as a lower bound
-    limit = 20000
-
-    def __init__(
-        self,
-        lines: Iterable[str],
-        home: Path,
-        root: Path,
-        imported: bool = False,
-    ) -> None:
-        """
-        `lines` are the rows to start from. `home` is the project directory the rows resolve
-        against, and `root` the directory typed paths are read from. `imported` says the rows
-        came from a file of the user's own, so each anchored row gets a note.
-        """
-        self.home = home
-        self.root = root
-        self.rows: list[str] = list(dict.fromkeys(lines))
-        self.notes: list[tuple[str, str]] = []
-        # the index of the row under the cursor; None while at the prompt
-        self.cursor: int | None = None
-        # the first row shown, once there are more rows than fit
-        self.offset = 0
-        # whether the text being submitted was pasted, so that it only adds
-        self.pasted = False
-        # set by the closing submission, so that the whole list is printed once more
-        self.done = False
-        # the rows the summary was worked out for, and the summary
-        self.summarized: tuple[tuple[str, ...], dict[str, tuple[str, str]]] | None = None
-        if not imported:
-            return
-        # an anchored line was written for the project the file came from
-        for row in self.rows:
-            try:
-                base, _ = parse(row, home)
-            except ValueError:
-                continue
-            if (
-                base is not None
-                and row != "./"
-            ):
-                self.notes.append(("class:info", f"{row} resolves against {Renderer.home(home)}"))
-
-    def form(self, row: str) -> str:
-        """
-        Returns a listed row in canonical form, which is how typed lines are compared.
-
-        >>> editor.form('**/*.csv')
-        '*.csv'
-        """
-        try:
-            return canonical(row, self.home, self.home)
-        except (OSError, RuntimeError, ValueError):
-            return row
-
-    def submit(self, text: str) -> None:
-        """
-        Toggle the typed line, or add each pasted line. An empty submission finishes and
-        clears the notes.
-        """
-        pasted = self.pasted
-        self.pasted = False
-        self.notes.clear()
-        lines = [
-            line.strip()
-            for line in text.splitlines()
-            if line.strip()
-        ]
-        if not lines:
-            self.done = True
-            self.cursor = None
-            return
-        if len(lines) > 1:
-            pasted = True
-        for line in lines:
-            self.enter(line, toggle=not pasted)
-
-    def enter(
-        self,
-        text: str,
-        toggle: bool,
-    ) -> None:
-        """
-        Add a line, or remove it if `toggle` is set and it is already listed. A line that does
-        not parse, names Trail metadata, or names a directory without its '/' is refused with a
-        note.
-        """
-        home = self.home
-        try:
-            line = canonical(text, home, self.root)
-            base, _ = parse(line, home)
-        except (OSError, RuntimeError, ValueError) as error:
-            self.notes.append(("class:error", f"{text}: {error}"))
-            return
-        listed = [
-            index
-            for index, row in enumerate(self.rows)
-            if (
-                row == line
-                or self.form(row) == line
-            )
-        ]
-        if listed:
-            if toggle:
-                for index in reversed(listed):
-                    self.remove(index)
-            else:
-                self.notes.append(("class:info", f"{line} is already listed"))
-            return
-        if (
-            base is not None
-            and base.is_relative_to(home / ".trail")
-        ):
-            self.notes.append(("class:error", f"{line} is Trail metadata"))
-            return
-        if slashless(line, home) is not None:
-            self.notes.append(
-                ("class:error", f"{line} is a directory; end it with '/' to watch it")
-            )
-            return
-        self.rows.append(line)
-
-    def remove(self, index: int) -> None:
-        """
-        Remove the row at `index`, keeping the cursor on a row. Removing './' notes that the
-        project directory will no longer be watched.
-        """
-        row = self.rows.pop(index)
-        if self.form(row) == "./":
-            self.notes.append(("class:info", "the project directory will no longer be watched"))
-        if self.cursor is not None:
-            if not self.rows:
-                self.cursor = None
-            else:
-                self.cursor = min(self.cursor, len(self.rows) - 1)
-
-    @property
-    def summary(self) -> dict[str, tuple[str, str]]:
-        """
-        Maps each row to its kind and the count shown beside it. Both are worked out again only
-        when the rows change, since counting walks the project.
-
-        >>> editor.summary['data/']
-        ('root', 'covered by ./')
-        """
-        rows = tuple(self.rows)
-        if (
-            self.summarized is not None
-            and self.summarized[0] == rows
-        ):
-            return self.summarized[1]
-        home = self.home
-        counts, capped = tally(rows, home, self.limit)
-        kinds = {
-            row: kind(row, home)
-            for row in rows
-        }
-        roots = {
-            row: parse(row, home)[0]
-            for row in rows
-            if kinds[row] == "root"
-        }
-        out = {
-            row: (kinds[row], self.count(row, kinds[row], counts, capped, roots))
-            for row in rows
-        }
-        self.summarized = (rows, out)
-        return out
-
-    @staticmethod
-    def count(
-            row: str,
-            described: str,
-            counts: Counter[str],
-            capped: bool,
-            roots: dict[str, Path],
-    ) -> str:
-        """
-        Returns the count shown beside a row. A root inside another root shows the root that
-        covers it instead. Once the walk stopped early, a count is a lower bound and ends in '+'.
-        """
-        if described == "invalid":
-            return ""
-        if described == "root":
-            base = roots[row]
-            # a root inside another adds nothing to it
-            for other, ancestor in roots.items():
-                if (
-                    base != ancestor
-                    and base.is_relative_to(ancestor)
-                ):
-                    return f"covered by {other}"
-        if capped:
-            files = f"{counts[row]}+ files"
-        else:
-            files = plural(counts[row], "file")
-        if row.startswith("!"):
-            return f"{files} excluded"
-        return f"{files} now"
-
-    @property
-    def viewport(self) -> int:
-        """The rows shown at once, from the terminal height, as `Picker.viewport` does."""
-        rows = get_app().output.get_size().rows
-        return max(1, rows - self.margin)
-
-    def message(self) -> StyleAndTextTuples:
-        """
-        Returns the rows, each with its kind and count, then the notes. While editing, only the
-        rows that fit the terminal are shown, and the window follows the cursor. Once done, every
-        row is shown. See the class docstring for an example.
-        """
-        fragments: StyleAndTextTuples = []
-        if not self.rows:
-            fragments.append(("class:info", "  none: only what you track yourself is tracked\n"))
-        summary = self.summary
-        width = max(
-            (len(row) for row in self.rows),
-            default=0,
-        )
-        kinds = max(
-            (len(described) for described, _ in summary.values()),
-            default=0,
-        )
-        if self.done:
-            shown = range(len(self.rows))
-        else:
-            viewport = self.viewport
-            # the window follows the cursor out of either end
-            if self.cursor is not None:
-                if self.cursor < self.offset:
-                    self.offset = self.cursor
-                elif self.cursor >= self.offset + viewport:
-                    self.offset = self.cursor - viewport + 1
-            else:
-                self.offset = max(0, len(self.rows) - viewport)
-            self.offset = min(self.offset, max(0, len(self.rows) - viewport))
-            shown = range(self.offset, min(len(self.rows), self.offset + viewport))
-            if self.offset:
-                fragments.append(("class:info", f"  ↑ {self.offset} more\n"))
-        for index in shown:
-            row = self.rows[index]
-            described, count = summary[row]
-            if index == self.cursor:
-                fragments.append(("class:selected-option", f"> {row:<{width}}  "))
-            elif described == "invalid":
-                fragments.append(("class:error", f"  {row:<{width}}  "))
-            else:
-                fragments.append(("class:kind", f"  {row:<{width}}  "))
-            fragments.append(("class:info", f"{described:<{kinds}}  "))
-            fragments.append(("", f"{count}\n"))
-        if not self.done:
-            below = len(self.rows) - shown.stop
-            if below > 0:
-                fragments.append(("class:info", f"  ↓ {below} more\n"))
-        fragments.extend(
-            (style, f"  {note}\n")
-            for style, note in self.notes
-        )
-        return fragments
-
-    def request(self) -> str:
-        """Returns the instruction shown above the prompt, which depends on the cursor."""
-        if self.cursor is not None:
-            return "Press <ENTER> to remove this line, or <ESCAPE> to return:"
-        if self.rows:
-            return "Type a line to add or remove it, <UP> to pick one, or <ENTER> to continue:"
-        return "Type a line to add it (or <ENTER> to continue):"
-
-    @cached_property
-    def bindings(self) -> KeyBindings:
-        """
-        Returns the editor's key bindings. <UP> and <DOWN> move the cursor through the rows,
-        and <ENTER> removes the row under it. <ESCAPE> or typing returns to the prompt. A paste
-        is marked, so that it only adds.
-        """
-        bindings = KeyBindings()
-        browsing = Condition(lambda: self.cursor is not None)
-        idle = ~has_completions & Condition(lambda: not get_app().current_buffer.text)
-
-        @bindings.add("up", filter=idle)
-        def _up(event: KeyPressEvent) -> None:
-            if not self.rows:
-                return
-            if self.cursor is None:
-                self.cursor = len(self.rows) - 1
-            else:
-                self.cursor = max(0, self.cursor - 1)
-            self.notes.clear()
-
-        @bindings.add("down", filter=idle & browsing)
-        def _down(event: KeyPressEvent) -> None:
-            if self.cursor == len(self.rows) - 1:
-                self.cursor = None
-            else:
-                self.cursor += 1
-
-        @bindings.add("enter", filter=browsing)
-        def _remove(event: KeyPressEvent) -> None:
-            self.notes.clear()
-            self.remove(self.cursor)
-
-        @bindings.add("escape", filter=browsing, eager=True)
-        def _return(event: KeyPressEvent) -> None:
-            self.cursor = None
-
-        # typing hands the keys back to the prompt, starting with the one typed
-        @bindings.add(Keys.Any, filter=browsing)
-        def _type(event: KeyPressEvent) -> None:
-            self.cursor = None
-            event.current_buffer.insert_text(event.data)
-
-        @bindings.add(Keys.BracketedPaste)
-        def _paste(event: KeyPressEvent) -> None:
-            self.cursor = None
-            self.pasted = True
-            text = (
-                event.data
-                .replace("\r\n", "\n")
-                .replace("\r", "\n")
-            )
-            event.current_buffer.insert_text(text)
-
-        return bindings
-
-    def run(self) -> list[str]:
-        """Run the editor. Returns the rows."""
-        offered = completer(
-            lambda: self.rows,
-            lambda: self.home,
-            lambda: self.root,
-        )
-        ask(
-            self.message,
-            self.request,
-            self.submit,
-            offered,
-            multiline=True,
-            extra=self.bindings,
-        )
-        return self.rows
-
-
 def startup(trail: Trail) -> None:
     """Placeholder: run `trail` in the background on login. Not yet asked or implemented."""
 
@@ -979,6 +462,7 @@ def init(root: Path) -> Trail:
     Trail started in ~/project 🌲
       markers: ./ *.csv *.txt *.json
       tracked: 2 assets in 1 dir
+    Edit /home/user/project/.markers to change the markers.
     """
     existing = Trail.locate(root)
     if existing is None:
@@ -1025,27 +509,22 @@ def init(root: Path) -> Trail:
     else:
         lines = chosen[1]
         say(f"  markers from {chosen[0]}", "class:kind")
-    # the anchored lines of a file from elsewhere were written for the project it came from
     imported = picker.custom not in (None, path)
-    say("")
-
-    say("Now let's edit the markers 🏷️:", "bold")
-    hint(
-        "<UP> and <DOWN> to select markers.",
-        "<ENTER> to delete a selected marker.",
-        "<ESCAPE> to deselect a marker.",
-        "<TAB> to autocomplete a typed marker.",
-    )
-    say("")
-    rows = Editor(Text.markers(lines), home, root, imported).run()
     say("")
 
     # `trail` on startup is asked here once `startup` is implemented
 
-    path.write_text(Text.compose(lines, rows), encoding="utf-8")
+    text = "".join(
+        f"{line}\n"
+        for line in lines
+    )
+    path.write_text(text, encoding="utf-8")
     # opening the Trail scans for what the markers indicate; naming .trail itself opens the
     # directory chosen, even nested in another Trail
     trail = Trail(home / ".trail", markers=None)
+    # the anchored lines of a file from elsewhere were written for the project it came from,
+    # so the warnings name each one
+    trail.markers.imported = imported
 
     say(f"Trail started in {Renderer.home(home)} 🌲", "bold")
     say(f"  markers: {' '.join(trail.markers) or 'none'}", "class:info")
@@ -1054,5 +533,6 @@ def init(root: Path) -> Trail:
     say(f"  tracked: {assets} in {dirs}", "class:info")
     for warning in trail.markers.warnings:
         say(f"  {warning}", "class:error")
+    say(f"Edit {path} to change the markers.")
     say("")
     return trail

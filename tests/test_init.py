@@ -14,7 +14,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from trail.cli.init import Editor, Paths, Picker, init, offer
+from trail.cli.init import Paths, Picker, init, offer
 from trail.markers import MARKERS, available
 from trail.trail import Trail
 
@@ -24,8 +24,6 @@ DOWN = "\x1b[B"
 ESCAPE = "\x1b"
 TAB = "\t"
 INTERRUPT = "\x03"
-# emacs' unix-line-discard, which empties a prompt that came filled in
-DISCARD = "\x15"
 
 
 class TestInit:
@@ -82,9 +80,9 @@ class TestInit:
     def default() -> list[str]:
         return (MARKERS / "default.txt").read_text(encoding="utf-8").splitlines()
 
-    def test_accepting_every_default_starts_a_trail_with_the_default_markers(self) -> None:
+    def test_accepting_the_default_starts_a_trail_with_the_default_markers(self) -> None:
         with self.workspace() as root:
-            trail = self.run(root, ENTER, ENTER)
+            trail = self.run(root, ENTER)
             assert trail.dir == root / ".trail"
             default = (MARKERS / "default.txt").read_text(encoding="utf-8")
             assert (root / ".markers").read_text(encoding="utf-8") == default
@@ -93,135 +91,61 @@ class TestInit:
             # the default watches the project but marks no files
             assert not trail.assets
 
-    def test_escape_turns_down_the_default_markers(self) -> None:
+    def test_the_arrows_choose_another_marker_set(self) -> None:
         with self.workspace() as root:
-            trail = self.run(root, ESCAPE, "./", ENTER, "md", ENTER, ENTER)
-            assert list(trail.markers) == ["./", "*.md"]
-            assert (root / ".markers").read_text(encoding="utf-8") == "./\n*.md\n"
-            assert root / "notes.md" in trail.assets
-            assert root / "top.csv" not in trail.assets
+            trail = self.run(root, DOWN, ENTER)
+            assert list(trail.markers) == (
+                (MARKERS / "general.txt").read_text(encoding="utf-8").splitlines()
+            )
+            assert root / "top.csv" in trail.assets
+
+    def test_escape_leaves_a_blank_markers_file(self) -> None:
+        with self.workspace() as root:
+            (root / ".markers").write_text("# mine\n./\n*.md\n", encoding="utf-8")
+            trail = self.run(root, ESCAPE)
+            assert (root / ".markers").read_text(encoding="utf-8") == ""
+            assert not trail.markers
+            assert not trail.dirs
+            assert not trail.assets
 
     def test_a_typed_path_chooses_a_markers_file_of_ones_own(self) -> None:
         with self.workspace() as root, TemporaryDirectory() as elsewhere:
             source = Path(elsewhere) / "mine.markers"
-            source.write_text("# mine\n./\n*.md\n", encoding="utf-8")
-            trail = self.run(root, str(source), ENTER, ENTER)
-            assert (root / ".markers").read_text(encoding="utf-8") == "# mine\n./\n*.md\n"
+            source.write_text("# mine\n./\n*.md\nfolder/*.csv\n", encoding="utf-8")
+            trail = self.run(root, str(source), ENTER)
+            text = (root / ".markers").read_text(encoding="utf-8")
+            assert text == "# mine\n./\n*.md\nfolder/*.csv\n"
             assert root / "notes.md" in trail.assets
+            assert root / "folder" / "nested.csv" in trail.assets
             assert root / "top.csv" not in trail.assets
+            # an anchored line was written for the project the file came from
+            [warning] = trail.markers.warnings
+            assert "'folder/*.csv' was imported" in warning
 
     def test_a_typed_directory_offers_the_markers_inside_it(self) -> None:
         with self.workspace() as root, TemporaryDirectory() as elsewhere:
             (Path(elsewhere) / ".markers").write_text("./\n*.md\n", encoding="utf-8")
-            trail = self.run(root, elsewhere, ENTER, ENTER)
+            trail = self.run(root, elsewhere, ENTER)
+            assert list(trail.markers) == ["./", "*.md"]
+
+    def test_a_completed_directory_is_typed_on_into(self) -> None:
+        with self.workspace() as root:
+            (root / "presets").mkdir()
+            (root / "presets" / "mine.markers").write_text("./\n*.md\n", encoding="utf-8")
+            trail = self.run(root, "./pre", TAB, TAB, ENTER, pace=0.1)
             assert list(trail.markers) == ["./", "*.md"]
 
     def test_an_arrow_after_typing_returns_to_the_markers_files(self) -> None:
         with self.workspace() as root:
-            trail = self.run(root, "missing", UP, ENTER, ENTER)
+            trail = self.run(root, "missing", UP, ENTER)
             assert list(trail.markers) == self.default()
-
-    def test_lines_toggle_in_canonical_form(self) -> None:
-        with self.workspace() as root:
-            trail = self.run(
-                root,
-                ESCAPE,
-                "./",
-                ENTER,
-                "csv",
-                ENTER,
-                "md",
-                ENTER,
-                # the same line written another way takes it back
-                "**/*.md",
-                ENTER,
-                ".tif",
-                ENTER,
-                ENTER,
-            )
-            assert list(trail.markers) == ["./", "*.csv", "*.tif"]
-
-    def test_an_invalid_line_is_refused_without_ending_the_step(self) -> None:
-        with self.workspace() as root:
-            trail = self.run(root, ESCAPE, "!", ENTER, "./", ENTER, "md", ENTER, ENTER)
-            assert list(trail.markers) == ["./", "*.md"]
-
-    def test_entered_paths_become_lines(self) -> None:
-        with self.workspace() as root, TemporaryDirectory() as elsewhere:
-            outside = Path(elsewhere).resolve()
-            (outside / "far.csv").write_text("a\n", encoding="utf-8")
-            (outside / "kept.md").write_text("a\n", encoding="utf-8")
-            trail = self.run(
-                root,
-                DOWN,
-                ENTER,
-                "notes.md",
-                ENTER,
-                str(outside / "kept.md"),
-                ENTER,
-                str(outside),
-                ENTER,
-                ENTER,
-            )
-            assert list(trail.markers)[-3:] == [
-                "./notes.md",
-                f"{outside}/kept.md",
-                f"{outside}/",
-            ]
-            assert root / "notes.md" in trail.assets
-            assert outside / "kept.md" in trail.assets
-            assert outside in trail.dirs
-            assert outside / "far.csv" in trail.assets
-
-    def test_the_line_under_the_cursor_is_removed(self) -> None:
-        with self.workspace() as root, TemporaryDirectory() as elsewhere:
-            outside = Path(elsewhere).resolve()
-            (outside / "far.csv").write_text("a\n", encoding="utf-8")
-            (outside / "kept.md").write_text("a\n", encoding="utf-8")
-            trail = self.run(
-                root,
-                DOWN,
-                ENTER,
-                str(outside / "kept.md"),
-                ENTER,
-                str(outside),
-                ENTER,
-                # the cursor starts on the last line listed
-                UP,
-                ENTER,
-                ESCAPE,
-                ENTER,
-            )
-            assert outside / "kept.md" in trail.assets
-            # the line for kept.md still names the directory, but no longer as a root
-            assert not trail.dirs[outside].root
-            assert outside / "far.csv" not in trail.assets
-
-    def test_a_pasted_list_only_adds(self) -> None:
-        with self.workspace() as root:
-            (root / "other.md").write_text("a\n", encoding="utf-8")
-            paste = "\x1b[200~notes.md   \r\nother.md\r\n*.csv\r\n\x1b[201~"
-            single = "\x1b[200~*.txt\x1b[201~"
-            trail = self.run(root, DOWN, ENTER, paste, ENTER, single, ENTER, ENTER)
-            assert root / "notes.md" in trail.assets
-            assert root / "other.md" in trail.assets
-            # the lines already listed stay, rather than being toggled off
-            assert "*.csv" in trail.markers
-            assert "*.txt" in trail.markers
-
-    def test_the_arrows_choose_another_marker_set(self) -> None:
-        with self.workspace() as root:
-            trail = self.run(root, DOWN, ENTER, ENTER)
-            assert list(trail.markers) == (
-                (MARKERS / "general.txt").read_text(encoding="utf-8").splitlines()
-            )
 
     def test_reinitializing_starts_from_the_default_markers(self) -> None:
         with self.workspace() as root:
             (root / ".markers").write_text("# mine\n./\n*.md\n", encoding="utf-8")
             first = Trail(root)
             events = len(first.events)
-            trail = self.run(root / "folder", ENTER, ENTER)
+            trail = self.run(root / "folder", ENTER)
             assert trail.dir == root / ".trail"
             assert trail.id == first.id
             assert len(trail.events) >= events
@@ -232,151 +156,20 @@ class TestInit:
 
     def test_reinitializing_keeps_the_project_markers_when_they_are_named(self) -> None:
         with self.workspace() as root:
-            (root / ".markers").write_text("# mine\n./\n*.md\n", encoding="utf-8")
+            mine = "# mine\n./\n*.md\nfolder/*.csv\n"
+            (root / ".markers").write_text(mine, encoding="utf-8")
             Trail(root)
-            self.run(root, ".markers", ENTER, ENTER)
-            assert (root / ".markers").read_text(encoding="utf-8") == "# mine\n./\n*.md\n"
-
-    def test_escape_with_nothing_added_leaves_a_blank_markers_file(self) -> None:
-        with self.workspace() as root:
-            (root / ".markers").write_text("# mine\n./\n*.md\n", encoding="utf-8")
-            trail = self.run(root, ESCAPE, ENTER)
-            assert (root / ".markers").read_text(encoding="utf-8") == ""
-            assert not trail.markers
-            assert not trail.dirs
-            assert root / "top.csv" not in trail.assets
-
-    def test_a_completed_directory_is_typed_on_into(self) -> None:
-        with self.workspace() as root:
-            (root / "folder" / "deep.md").write_text("a\n", encoding="utf-8")
-            trail = self.run(
-                root,
-                ESCAPE,
-                "./fol",
-                TAB,
-                "*.md",
-                ENTER,
-                ENTER,
-                pace=0.1,
-            )
-            assert list(trail.markers) == ["folder/*.md"]
-            assert root / "folder" / "deep.md" in trail.assets
+            trail = self.run(root, ".markers", ENTER)
+            assert (root / ".markers").read_text(encoding="utf-8") == mine
+            # its anchored lines belong to this project, so nothing is reported as imported
+            assert not trail.markers.warnings
 
     def test_an_interrupt_writes_nothing(self) -> None:
         with self.workspace() as root:
             with pytest.raises(KeyboardInterrupt):
-                self.run(root, ENTER, "md", ENTER, INTERRUPT)
-            assert not (root / ".trail").exists()
-            assert not (root / ".markers").exists()
-
-    def test_an_interrupt_in_the_picker_writes_nothing(self) -> None:
-        with self.workspace() as root:
-            with pytest.raises(KeyboardInterrupt):
                 self.run(root, INTERRUPT)
             assert not (root / ".trail").exists()
-
-
-class TestEditor:
-    """The list editor of `init`, driven through its methods rather than its keys."""
-
-    @staticmethod
-    @contextmanager
-    def editor(*lines: str) -> Iterator[Editor]:
-        with (
-            TemporaryDirectory() as temporary,
-            create_pipe_input() as pipe,
-            create_app_session(input=pipe, output=DummyOutput()),
-        ):
-            home = Path(temporary).resolve()
-            (home / "data").mkdir()
-            (home / "a.csv").write_text("a\n", encoding="utf-8")
-            (home / "data" / "b.csv").write_text("a\n", encoding="utf-8")
-            (home / "data" / "c.png").write_text("a\n", encoding="utf-8")
-            (home / "data" / "d.tmp").write_text("a\n", encoding="utf-8")
-            yield Editor(lines, home, home)
-
-    @staticmethod
-    def text(editor: Editor) -> list[str]:
-        return "".join(
-            fragment[1]
-            for fragment in editor.message()
-        ).splitlines()
-
-    def test_rows_show_their_kind_and_count(self) -> None:
-        with self.editor("./", "*.csv", "data/", "data/*.png", "!data/*.tmp") as editor:
-            rows = [
-                line.split()
-                for line in self.text(editor)
-            ]
-            # the excluded d.tmp is not among them
-            assert rows[0] == ["./", "root", "3", "files", "now"]
-            assert rows[1] == ["*.csv", "root", "scope", "2", "files", "now"]
-            assert rows[2] == ["data/", "root", "covered", "by", "./"]
-            assert rows[3][-3:] == ["1", "file", "now"]
-            assert "not" in rows[3]
-            assert rows[4][-3:] == ["1", "file", "excluded"]
-
-    def test_a_typed_line_toggles_in_canonical_form(self) -> None:
-        with self.editor("./", "*.csv") as editor:
-            editor.submit(".csv")
-            assert editor.rows == ["./"]
-            editor.submit("csv")
-            assert editor.rows == ["./", "*.csv"]
-            editor.submit("data")
-            assert editor.rows == ["./", "*.csv", "data/"]
-            editor.submit("./data/")
-            assert editor.rows == ["./", "*.csv"]
-
-    def test_a_paste_only_adds(self) -> None:
-        with self.editor("./", "*.csv") as editor:
-            editor.pasted = True
-            editor.submit("*.csv")
-            assert editor.rows == ["./", "*.csv"]
-            assert editor.notes == [("class:info", "*.csv is already listed")]
-            editor.submit("*.csv\n*.png")
-            assert editor.rows == ["./", "*.csv", "*.png"]
-
-    def test_removing_the_project_directory_says_so(self) -> None:
-        with self.editor("./", "*.csv") as editor:
-            editor.submit(".")
-            assert editor.rows == ["*.csv"]
-            assert editor.notes == [
-                ("class:info", "the project directory will no longer be watched"),
-            ]
-
-    def test_invalid_lines_and_trail_metadata_are_refused(self) -> None:
-        with self.editor("./") as editor:
-            editor.submit("!")
-            assert editor.rows == ["./"]
-            assert editor.notes[0][0] == "class:error"
-            editor.submit(".trail/")
-            assert editor.rows == ["./"]
-            assert editor.notes == [("class:error", ".trail/ is Trail metadata")]
-
-    def test_the_list_is_held_to_the_terminal(self) -> None:
-        lines = [
-            f"*.x{index}"
-            for index in range(60)
-        ]
-        with self.editor(*lines) as editor:
-            text = self.text(editor)
-            viewport = editor.viewport
-            assert viewport < 60
-            assert text[0] == f"  ↑ {60 - viewport} more"
-            assert len(text) == viewport + 1
-            # the cursor pulls the window back up
-            editor.cursor = 0
-            text = self.text(editor)
-            assert text[0].startswith("> *.x0")
-            assert text[-1] == f"  ↓ {60 - viewport} more"
-            editor.submit("")
-            assert len(self.text(editor)) == 60
-
-    def test_counts_past_the_limit_are_a_lower_bound(self) -> None:
-        with self.editor("./", "*.csv") as editor:
-            editor.limit = 1
-            rows = self.text(editor)
-            assert "1+ files now" in rows[1]
+            assert not (root / ".markers").exists()
 
 
 class TestPaths:
@@ -453,7 +246,7 @@ class TestPicker:
 
 
 if __name__ == "__main__":
-    for suite in (TestInit(), TestEditor(), TestPaths(), TestPicker()):
+    for suite in (TestInit(), TestPaths(), TestPicker()):
         for method_name in dir(suite):
             if method_name.startswith("test_"):
                 getattr(suite, method_name)()
