@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from trail.asset import Asset, Assets
 from trail.dir import Dirs
+from trail.entry import Entry
 from trail.event import AddAssetEvent, Events, RemoveAssetEvent, WatchdogEvent
 from trail.markers import Markers, Scopes, canonical, parse
 from trail.node import Node
@@ -67,12 +68,13 @@ class JSON(Node):
 
 class Trail(Node):
     """
-    The record of a project. It holds the assets the project tracks and the events that
-    happened to them. The `.markers` file says which files are tracked automatically.
+    The record of a project. It holds the assets the project tracks, the Dirs `.markers`
+    names, and the events that happened to both. The `.markers` file says which directories
+    are watched and which files in them are tracked automatically.
 
     >>> trail
     Trail
-        id: dd6222668561434db99238ef126971c0
+        id: 7cdc235fe92941d492b5c5f348484da3
         dir: /tmp/tmpp_bl05lq/.trail
         dirs: [
             /tmp/tmpp_bl05lq,
@@ -127,17 +129,20 @@ class Trail(Node):
     @cached_property
     def dirs(self) -> Dirs:
         """
-        Returns a Dirs instance, which maps each directory `.markers` names to its Dir and holds
-        the root scopes. It is built from `markers` and rebuilt whenever they change, or when a
-        directory asset is tracked or offtrailed.
+        Returns a Dirs instance, which holds a Dir for each directory `.markers` names, by id
+        and by path, and the root scopes. `Dirs.refresh` keeps them in line with `markers`
+        after the log is replayed, after each change to `markers`, and when a directory asset
+        is tracked or offtrailed. Each Dir that comes or goes is logged.
 
         >>> self.dirs
         Dirs (2)
             0. Dir
+                id: 04e15251538241309989553fb4672653
                 path: /tmp/tmpp_bl05lq
                 root: True
                 scopes: []
             1. Dir
+                id: 3a654b91eb2047b3a2718d7f1d6a03e1
                 path: /tmp/tmpp_bl05lq/data
                 root: False
                 scopes: [
@@ -187,24 +192,24 @@ class Trail(Node):
     @cached_property
     def events(self):
         """
-        Returns an Events instance, which manages the collection of events that have occurred in the Trail.
+        Returns an Events instance, which holds the events about the Trail's assets and Dirs,
+        in the order they happened. A new Trail first logs a Dir for each directory `.markers`
+        names, then the assets the markers pick up.
 
-        >>> self.events
+        >>> self.events.select[1:3]
         Events (2)
-            0. AddAssetEvent
-                id: 2d75b41403bc42abb52af2966bf8a194
-                timestamp: 06:39:37.824
+            0. AddDirEvent
+                id: 55d70cabf19f44b286114704794b1805
+                timestamp: 02:48:26.945
+                src_path: /tmp/tmpp_bl05lq/data
+                rule: data/*.png
+            1. AddAssetEvent
+                id: f9b785f599e641ad8781eb615898eeef
+                timestamp: 02:48:26.945
                 src_path: /tmp/tmpp_bl05lq/new.csv
                 rule: *.csv
                 st_size: 17 B
-                st_mtime: 2026-10-02 23:39:37
-            1. AddAssetEvent
-                id: e35eb462ebb340a4bf640122db5c7c93
-                timestamp: 06:39:37.824
-                src_path: /tmp/tmpp_bl05lq/data/a.png
-                rule: data/*.png
-                st_size: 3 B
-                st_mtime: 2026-10-02 23:39:37
+                st_mtime: 2026-10-06 19:48:26
         """
         return Events(self)
 
@@ -255,6 +260,8 @@ class Trail(Node):
             self.json.load()
             self.events.jsonl.read()
             self.json.dump()
+            # the replay rebuilt the Dirs that were live, and .markers may have changed since
+            self.dirs.refresh()
             self.assets.scan()
             self.watchdog.reconcile()
 
@@ -332,9 +339,9 @@ class Trail(Node):
                 event = AddAssetEvent(src_path=str(path), rule=rule)
                 asset = event.apply(self)
                 self.events.append(event)
-                # a directory asset is never a Dir, so the Dirs are rebuilt without it
+                # a directory asset is never a Dir, so a Dir at its path goes
                 if asset.is_directory:
-                    vars(self).pop("dirs", None)
+                    self.dirs.refresh()
             tracked.append(asset)
         return tracked
 
@@ -355,8 +362,9 @@ class Trail(Node):
             if result is not None:
                 self.events.append(event)
                 offtrailed.append(result)
+                # a Dir may be named at the path the directory asset held
                 if result.is_directory:
-                    vars(self).pop("dirs", None)
+                    self.dirs.refresh()
         if offtrailed:
             self.watchdog.reconcile()
         if len(paths) == 1 and offtrailed:
@@ -525,7 +533,8 @@ class Trail(Node):
             )
             if event.apply(self) is not None:
                 moved.append(asset)
-        for path in self.dirs:
+        for directory in self.dirs:
+            path = directory.path
             if (
                 path.is_relative_to(source)
                 and not path.exists()
@@ -539,12 +548,29 @@ class Trail(Node):
 
     def clear(self) -> None:
         """
-        Empties the project record: every resource is offtrailed, and the log those
-        registrations were replayed from is then discarded. The Trail keeps its own id, so the
-        directory remains the same project rather than becoming a new one.
+        Empties the project record. Every asset is offtrailed, and then the log is discarded.
+        The Dirs stay, since `.markers` still names them, and `Events.clear` logs them again
+        with their IDs. The Trail keeps its own id, so the directory remains the same project
+        rather than becoming a new one.
         """
         self.assets.clear()
         self.events.clear()
+
+    def _entry(self, identifier: str) -> Entry | None:
+        """
+        Returns the asset or the Dir with an id, or None if neither holds it.
+
+        >>> trail._entry('04e15251538241309989553fb4672653')
+        Dir
+            id: 04e15251538241309989553fb4672653
+            path: /tmp/tmpp_bl05lq
+            root: True
+            scopes: []
+        """
+        asset = self.assets.id2entry.get(identifier)
+        if asset is not None:
+            return asset
+        return self.dirs.id2entry.get(identifier)
 
     def push(self):
         """Placeholder for possible remote synchronization"""
@@ -565,8 +591,8 @@ class Trail(Node):
         ]
         dirs = self.dirs
         shown = (
-            str(path)
-            for path in islice(dirs, self.repr_limit)
+            str(directory.path)
+            for directory in islice(dirs, self.repr_limit)
         )
         lines.extend(list_repr("dirs", shown, len(dirs)))
         assets = self.assets

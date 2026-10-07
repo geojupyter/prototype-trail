@@ -1,37 +1,28 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field, fields
-from functools import cached_property
+from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from stat import S_ISDIR, S_ISREG
-from typing import TYPE_CHECKING, Self, overload
-from uuid import uuid4
+from typing import TYPE_CHECKING, Self
 
-from trail.collection import Collection
-from trail.node import Node
+from trail.entry import Entries, Entry
 from trail.util import (
     MISSING,
     PathLike,
-    bare_repr,
     container,
     mtime_repr,
-    normalize_id,
     st_size_repr,
     walk,
 )
 
 if TYPE_CHECKING:
-    from trail.event import Event
     from trail.trail import Trail
-
-# an asset is addressed by its hexadecimal ID or by its path
-AssetKey = PathLike
 
 
 @dataclass(kw_only=True, eq=False, repr=False)
-class Asset(Node):
+class Asset(Entry):
     """
     A file or a directory tracked by a Trail. A directory asset is tracked whole, and its
     inside is never walked.
@@ -43,31 +34,17 @@ class Asset(Node):
         st_size: 17 B
         st_mtime: 2026-10-02 23:39:37
     """
-    id: str = field(default_factory=lambda: uuid4().hex)
-    path: Path
     is_directory: bool = field(default=False, repr=False)
 
     if TYPE_CHECKING:
         _parent: Assets
-
-    def __post_init__(self) -> None:
-        """Normalize the id and resolve the path."""
-        Node.__init__(self)
-        self.id = normalize_id(self.id)
-        self.path = Path(self.path).expanduser().resolve()
 
     def _repr_items(self) -> Iterator[tuple[str, object]]:
         """
         Yields the fields a repr shows. The size and mtime are read from the filesystem, and a
         directory asset also shows how many files it holds.
         """
-        for asset_field in fields(self):
-            if not asset_field.repr:
-                continue
-            value = getattr(self, asset_field.name)
-            if asset_field.name == 'path':
-                value = str(value)
-            yield asset_field.name, value
+        yield from super()._repr_items()
         # stat'd on access rather than stored, so a resource that has gone says so rather than
         # raising out of a repr
         try:
@@ -82,15 +59,6 @@ class Asset(Node):
             yield 'files', count
         yield 'st_size', st_size_repr(size)
         yield 'st_mtime', mtime_repr(mtime)
-
-    def __repr__(self) -> str:
-        """Shows the id, the path, and the size and mtime on disk."""
-        lines = [type(self).__name__]
-        lines.extend(
-            f'    {name}: {bare_repr(value)}'
-            for name, value in self._repr_items()
-        )
-        return '\n'.join(lines)
 
     @classmethod
     def from_path(
@@ -129,16 +97,6 @@ class Asset(Node):
         if trail is not None:
             out._parent = trail.assets
         return out
-
-    @property
-    def name(self) -> str:
-        """Name of the asset (last component of the path)."""
-        return self.path.name
-
-    @property
-    def directory(self) -> Path:
-        """Directory containing the asset."""
-        return self.path.parent
 
     @property
     def fingerprint(self) -> tuple[int, int, float]:
@@ -184,39 +142,6 @@ class Asset(Node):
         """
         return self.fingerprint[2]
 
-    @cached_property
-    def events(self) -> dict[str, Event]:
-        """Events associated with the asset."""
-        return {}
-
-    def track(self) -> Self:
-        """
-        Add the asset to the Trail's assets and return it. Nothing is logged. An older asset
-        with the same id, or another asset at the same path, is offtrailed first.
-        """
-        collection = self._parent
-        if collection is None:
-            raise ValueError("Asset has no Trail; pass trail to from_path")
-        trail = collection._trail
-        if self._trail is not trail:
-            raise ValueError("Asset already belongs to another Trail")
-        if collection is not trail.assets:
-            raise ValueError("Asset belongs to the wrong collection")
-        if trail._ignored(self.path):
-            raise ValueError(f"Cannot track Trail metadata: {self.path}")
-        previous = collection.id2asset.get(self.id)
-        # a path holds one asset
-        occupant = collection.path2asset.get(self.path)
-        for old in (previous, occupant):
-            if (
-                old is None
-                or old is self
-            ):
-                continue
-            old.offtrail()
-        collection[self.id] = self
-        return self
-
     def move(self, destination: PathLike) -> Self:
         """
         Repoint a tracked asset at `destination`, keeping its ID and its position in the
@@ -232,7 +157,7 @@ class Asset(Node):
         previous = self.path
         self.path = destination
         # a path holds one asset
-        occupant = collection.path2asset.get(destination)
+        occupant = collection.path2entry.get(destination)
         if (
             occupant is not None
             and occupant is not self
@@ -241,18 +166,8 @@ class Asset(Node):
         collection.repath(self, previous)
         return self
 
-    def offtrail(self) -> None:
-        """Offtrail the asset, removing it from the collection holding it."""
-        collection = self._parent
-        if (
-            collection is None
-            or collection.id2asset.get(self.id) is not self
-        ):
-            return
-        del collection[self.id]
 
-
-class Assets(Collection[AssetKey, Asset]):
+class Assets(Entries[Asset]):
     """
     A collection of Asset objects tracked by a Trail, in the order they were tracked.
 
@@ -270,99 +185,7 @@ class Assets(Collection[AssetKey, Asset]):
             st_mtime: 2026-10-02 23:39:37
     """
 
-    @cached_property
-    def path2asset(self) -> dict[Path, Asset]:
-        """
-        Maps each path to its asset. It is built from `data` rather than kept beside it, so a
-        selection builds its own.
-        """
-        return {
-            asset.path: asset
-            for asset in self.data.values()
-        }
-
-    @property
-    def id2asset(self) -> dict[str, Asset]:
-        """Maps each id to its asset. This is `data` itself."""
-        return self.data
-
-    @overload
-    def __getitem__(self, key: AssetKey) -> Asset: ...
-
-    @overload
-    def __getitem__(self, key: Iterable[AssetKey]) -> tuple[Asset, ...]: ...
-
-    def __getitem__(
-            self,
-            key: AssetKey | Iterable[AssetKey],
-    ) -> Asset | tuple[Asset, ...]:
-        """
-        Returns the asset with an id or at a path. Several keys return a tuple. Raises KeyError
-        for a key that is neither.
-
-        >>> trail.assets[project / 'new.csv']
-        Asset
-            id: 9d167ab8f5f64f3f8ac72f3132c70ad1
-            path: /tmp/tmpp_bl05lq/new.csv
-            st_size: 17 B
-            st_mtime: 2026-10-02 23:39:37
-        """
-        if isinstance(key, str) and key in self.id2asset:
-            return self.id2asset[key]
-        if isinstance(key, (str, os.PathLike)):
-            return self.path2asset[Path(key).expanduser().resolve()]
-        selected = []
-        for value in key:
-            if not isinstance(value, (str, os.PathLike)):
-                raise TypeError("Expected a path or asset ID")
-            selected.append(self[value])
-        return tuple(selected)
-
-    def __setitem__(
-            self,
-            key: str,
-            value: Asset,
-    ) -> None:
-        """Hold an asset under its id and its path. The key must be the asset's id."""
-        if not isinstance(value, Asset):
-            raise TypeError(f"Expected Asset, got {type(value).__name__}")
-        if key != value.id:
-            raise ValueError(f"Asset ID does not match its key: {key}")
-        if key not in self.id2asset:
-            self.ids.append(key)
-        self.id2asset[key] = value
-        self.path2asset[value.path] = value
-
-    def __delitem__(self, key: AssetKey) -> None:
-        """Remove an asset without logging it. `Trail.offtrail` is what logs a removal."""
-        asset = self[key]
-        del self.id2asset[asset.id]
-        self.ids.remove(asset.id)
-        if self.path2asset.get(asset.path) is asset:
-            del self.path2asset[asset.path]
-
-    def repath(
-            self,
-            asset: Asset,
-            previous: Path,
-    ) -> None:
-        """Move an asset from its previous path to its current one in `path2asset`."""
-        if self.path2asset.get(previous) is asset:
-            del self.path2asset[previous]
-        self[asset.id] = asset
-
-    def __contains__(self, key: AssetKey | Asset) -> bool:
-        """
-        Whether an asset, an id or a path is held.
-
-        >>> project / 'new.csv' in trail.assets
-        True
-        """
-        if isinstance(key, Asset):
-            return key.id in self.id2asset
-        if isinstance(key, str) and key in self.id2asset:
-            return True
-        return Path(key).expanduser().resolve() in self.path2asset
+    entry_type = Asset
 
     def clear(self) -> None:
         """
@@ -412,7 +235,7 @@ class Assets(Collection[AssetKey, Asset]):
                 else:
                     candidates.append(path)
         else:
-            for directory in dirs.values():
+            for directory in dirs:
                 walks[directory.path] = directory.recursive
         candidates.extend(walk(walks, self._descends))
         marked = {
@@ -433,16 +256,17 @@ class Assets(Collection[AssetKey, Asset]):
         {PosixPath('/tmp/tmpp_bl05lq/data'): True}
         """
         dirs = self._trail.dirs
+        path2dir = dirs.path2entry
         recursive = any(
-            dirs[parent].recursive
+            path2dir[parent].recursive
             for parent in (path, *path.parents)
-            if parent in dirs
+            if parent in path2dir
         )
         out = {path: recursive}
         # a Dir below the path is walked as deep as it reaches
         out.update(
             (directory.path, directory.recursive)
-            for directory in dirs.values()
+            for directory in dirs
             if (
                 directory.path != path
                 and directory.path.is_relative_to(path)
@@ -458,7 +282,7 @@ class Assets(Collection[AssetKey, Asset]):
         trail = self._trail
         # the stat comes last, since most candidates fail before it
         return (
-            path not in self.path2asset
+            path not in self.path2entry
             and path not in trail._offtrailed_paths
             and not trail._ignored(path)
             and trail.dirs.tracks(path)
@@ -488,7 +312,7 @@ class Assets(Collection[AssetKey, Asset]):
             or container(path)
         ):
             return False
-        asset = self.path2asset.get(path)
+        asset = self.path2entry.get(path)
         # the inside of a directory asset is never walked
         if (
             asset is not None
@@ -500,7 +324,7 @@ class Assets(Collection[AssetKey, Asset]):
         return (
             not path.name.startswith('.')
             or any(
-                directory.is_relative_to(path)
+                directory.path.is_relative_to(path)
                 for directory in trail.dirs
             )
         )

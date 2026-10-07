@@ -75,7 +75,7 @@ class TestListing:
     def test_a_filter_keeps_the_position_the_collection_addresses(self) -> None:
         with self.session() as console:
             asset = console._trail.assets[console.root / "c.csv"]
-            written = self.run(console, f"events asset={asset.id}")
+            written = self.run(console, f"events entry={asset.id}")
             # c.csv was tracked after two other assets, and keeps that position however few
             # are shown
             assert self.positions(written) == [2]
@@ -93,7 +93,7 @@ class TestListing:
             event = trail.events.select[1]
             asset = trail.assets[console.root / "c.csv"]
             assert self.positions(self.run(console, f"events id={event.id}")) == [1]
-            assert self.positions(self.run(console, f"events asset={asset.id}")) == [2]
+            assert self.positions(self.run(console, f"events entry={asset.id}")) == [2]
             # a bare value is not guessed at, and the refusal says how to name it
             written = self.run(console, f"events {event.id}")
             assert "not a comparison" in written
@@ -109,14 +109,22 @@ class TestListing:
             assert self.positions(written) == [1]
             assert "Asset" in written
             assert self.positions(self.run(console, "assets path=folder")) == [3]
-            assert "Dirs (0)" in self.run(console, "dirs")
+            assert "dirs: nothing matched" in self.run(console, "dirs")
             (root / "data").mkdir()
             self.run(console, "mark ./ data/*.csv folder/*.csv")
             written = self.run(console, "dirs")
             # a directory asset is never a Dir, so folder is left out
-            assert "Dirs (2)" in written
-            assert f"path: {root / 'data'}" in written
-            assert "./*.csv," in written
+            assert "dirs (2 of 2)" in written
+            assert "scopes: ./*.csv" in written
+            assert self.positions(self.run(console, "dirs path=data")) == [1]
+            assert self.positions(self.run(console, "dirs root=true")) == [0]
+            # a Dir comes from .markers, so clearing the Dirs is refused
+            assert "'unmark' its lines" in self.run(console, "dirs clear -f")
+            assert len(console._trail.dirs) == 2
+            data = console._trail.dirs[root / "data"]
+            written = self.run(console, f"events entry={data.id}")
+            assert "AddDirEvent" in written
+            assert "rule: data/*.csv" in written
 
     def test_or_takes_either_side(self) -> None:
         with self.session() as console:

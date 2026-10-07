@@ -84,12 +84,12 @@ class TestMarkers:
     def test_a_change_to_the_markers_rebuilds_the_dirs(self) -> None:
         with self.workspace() as root:
             trail = Trail(root)
-            assert list(trail.dirs) == [root]
+            assert list(trail.dirs.path2entry) == [root]
             assert list(trail.scopes) == ['*.csv']
             trail.mark('folder/*.txt')
-            assert list(trail.dirs) == [root, root / 'folder']
+            assert list(trail.dirs.path2entry) == [root, root / 'folder']
             trail.markers.replace(['./'])
-            assert list(trail.dirs) == [root]
+            assert list(trail.dirs.path2entry) == [root]
             assert not trail.scopes
             assert (root / '.markers').read_text(encoding='utf-8') == '# premade\n./\n'
 
@@ -130,7 +130,7 @@ class TestMarkers:
                 await trail.watchdog.stop()
                 assert ignored not in trail.assets
                 assert trail.assets[created].id in {
-                    event.asset.id
+                    event.entry.id
                     for event in trail.events
                     if event.get.rule == '*.csv'
                 }
@@ -311,15 +311,15 @@ class TestWarnings:
         with self.trail('./\ncube.zarr/\n') as (trail, root):
             [warning] = trail.markers.warnings
             assert "'cube.zarr/' names a directory asset" in warning
-            assert list(trail.dirs) == [root]
+            assert list(trail.dirs.path2entry) == [root]
 
     def test_a_directory_marker_naming_a_tracked_directory(self) -> None:
         with self.trail('./\ndata/\n') as (trail, root):
-            assert list(trail.dirs) == [root, root / 'data']
+            assert list(trail.dirs.path2entry) == [root, root / 'data']
             trail.track(root / 'data')
             [warning] = trail.markers.warnings
             assert "'data/' names a directory asset" in warning
-            assert list(trail.dirs) == [root]
+            assert list(trail.dirs.path2entry) == [root]
 
     def test_well_formed_markers_raise_nothing(self) -> None:
         with self.trail('./\n*.csv\ndata/\ndata/*.png\n!data/tmp_*\n') as (trail, _):

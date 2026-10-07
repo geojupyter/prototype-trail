@@ -98,7 +98,7 @@ class Command(Node):
         """
         assets = self._trail.assets
         if token.startswith("#"):
-            return assets.id2asset.get(token[1:])
+            return assets.id2entry.get(token[1:])
         found = assets.get(token)
         if found is not None:
             return found

@@ -184,7 +184,7 @@ class Watchdog(Node):
         """
         trail = self._trail
         out: set[Path] = set()
-        for directory in trail.dirs.values():
+        for directory in trail.dirs:
             path = directory.path
             out.add(path.parent)
             if not directory.recursive:
@@ -397,18 +397,25 @@ class Watchdog(Node):
     def consume(self, batch: list[WatchdogEvent]) -> None:
         """
         Apply a batch of events to the Trail. An event inside a directory asset is recorded
-        once per batch against the asset: a read as `opened`, anything else as `modified`.
+        once per batch against the asset: a read as `opened`, anything else as `modified`. An
+        event about a watched directory that arrives twice in a batch is applied once.
         """
         trail = self._trail
         touched: dict[Asset, set[str]] = {}
         moved = False
+        # a watched directory is reported by its own watch and by its parent's, so the same
+        # event about it can arrive twice
+        seen: set[tuple[str, str, str]] = set()
         for event in batch:
             enclosing = self._enclosing(event)
             if enclosing is not None:
                 touched.setdefault(enclosing, set()).add(event.event_type)
                 continue
             if event.is_directory:
-                self._directory(event)
+                key = (event.event_type, event.src_path, event.dest_path)
+                if key not in seen:
+                    seen.add(key)
+                    self._directory(event)
                 continue
             if event.apply(trail) is not None:
                 moved |= event.event_type == "moved"
@@ -436,7 +443,7 @@ class Watchdog(Node):
 
     def _enclosing(self, event: WatchdogEvent) -> Asset | None:
         """Returns the directory asset an event happened inside of, or None."""
-        path2asset = self._trail.assets.path2asset
+        path2asset = self._trail.assets.path2entry
         for text in (event.src_path, event.dest_path):
             if not text:
                 continue

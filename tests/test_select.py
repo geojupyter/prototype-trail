@@ -71,10 +71,10 @@ class TestSelect:
         with self.session() as (trail, root):
             events = trail.events
             event = events.select[1]
-            first = events.select[0].asset
+            first = events.select[0].entry
             assert self.positions(trail, events.select(f"id={event.id}")) == [1]
             # the asset is held by reference, and compares by its id
-            assert self.positions(trail, events.select(f"asset={first.id}")) == [0, 3]
+            assert self.positions(trail, events.select(f"entry={first.id}")) == [0, 3]
             assert self.positions(trail, events.select(f"src_path={root / 'a.csv'}")) == [0, 3, 4]
             # an id matches whole, not by prefix
             assert not events.select(f"id={event.id[:8]}")
@@ -228,7 +228,7 @@ class TestSelect:
             assets = trail.assets
             b = root / "b.csv"
             selection = assets.select[:]
-            assert selection.path2asset is not assets.path2asset
+            assert selection.path2entry is not assets.path2entry
             del selection[b]
             assert b not in selection
             assert b in assets

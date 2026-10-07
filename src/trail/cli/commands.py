@@ -15,6 +15,7 @@ from trail.markers import kind, parse
 if TYPE_CHECKING:
     from trail.asset import Assets
     from trail.cli.console import Console
+    from trail.dir import Dirs
     from trail.event import Events
 
 # the key bindings listed by `help`
@@ -304,33 +305,42 @@ class AssetsCommand(Listing):
         return self._trail.assets
 
 
-class DirsCommand(Command):
+class DirsCommand(Listing):
     """
-    Print the directories `.markers` names. A Dir has no id and is not in the log, so it is
-    printed whole rather than selected from.
+    List the directories `.markers` names. A Dir comes and goes with the lines that name it, so
+    `dirs clear` is refused, and `unmark` removes a Dir.
 
     > dirs
-    Dirs (2)
-        0. Dir
-            path: /tmp/tmpp_bl05lq
-            root: True
-            scopes: []
-        1. Dir
-            path: /tmp/tmpp_bl05lq/data
-            root: False
-            scopes: [
-                ./*.png,
-            ]
+    dirs (2 of 2)
+    0. Dir
+        id: 04e15251538241309989553fb4672653
+        path: .
+        root: True
+    1. Dir
+        id: 3a654b91eb2047b3a2718d7f1d6a03e1
+        path: data
+        root: False
+        scopes: ./*.png
     """
 
     name = "dirs"
-    usage = "dirs"
-    summary = "the directories .markers names, with their scopes"
+    usage = "dirs [EXPRESSION]"
+    summary = "the directories .markers names, sliced or filtered"
+    fields: ClassVar[tuple[str, ...]] = (
+        "id",
+        "path",
+        "root",
+        "cls",
+    )
 
-    def __call__(self, arguments: Sequence[str]) -> None:
-        """Print `repr(trail.dirs)` to the feed."""
-        for line in repr(self._trail.dirs).splitlines():
-            self._feed.append([("", line)])
+    @property
+    def collection(self) -> Dirs:
+        """Returns the Trail's Dirs."""
+        return self._trail.dirs
+
+    def discard(self, arguments: Sequence[str]) -> None:
+        """Refuse to clear the Dirs, since they come from `.markers`."""
+        self._feed.error("dirs: a Dir comes from .markers, so 'unmark' its lines to remove it")
 
 
 class EventsCommand(Listing):
@@ -345,7 +355,7 @@ class EventsCommand(Listing):
     summary = "the recorded events, sliced or filtered"
     fields: ClassVar[tuple[str, ...]] = (
         "id",
-        "asset",
+        "entry",
         "cls",
         "timestamp",
         "src_path",

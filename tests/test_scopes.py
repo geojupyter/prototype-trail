@@ -216,20 +216,24 @@ class TestReprs:
             root = Path(temporary).resolve()
             (root / '.markers').write_text(self.MARKERS, encoding='utf-8')
             trail = Trail(root)
+            ids = trail.dirs.ids
             assert repr(trail.dirs) == '\n'.join(
                 [
                     'Dirs (3)',
                     '    0. Dir',
+                    f'        id: {ids[0]}',
                     f'        path: {root}',
                     '        root: True',
                     '        scopes: []',
                     '    1. Dir',
+                    f'        id: {ids[1]}',
                     f'        path: {root}/data',
                     '        root: True',
                     '        scopes: [',
                     '            ./*.png,',
                     '        ]',
                     '    2. Dir',
+                    f'        id: {ids[2]}',
                     f'        path: {root}/data/raw',
                     '        root: False',
                     '        scopes: [',
@@ -243,6 +247,7 @@ class TestReprs:
         [directory] = build(['/mnt/data/images/train_*.png'], PROJECT)[0].values()
         assert repr(directory) == (
             'Dir\n'
+            f'    id: {directory.id}\n'
             '    path: /mnt/data/images\n'
             '    root: False\n'
             '    scopes: [\n'

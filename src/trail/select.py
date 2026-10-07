@@ -196,7 +196,7 @@ class Select[T: Selectable[Any], V](Node):
     def subset(self, keys: Iterable[str]) -> T:
         collection = self._parent
         out = copy(collection)
-        # whatever the original cached, such as its jsonl or path2asset, was built from it and
+        # whatever the original cached, such as its jsonl or path2entry, was built from it and
         # is shared by the shallow copy; dropped, it is rebuilt from the copy on access
         cached = [
             name

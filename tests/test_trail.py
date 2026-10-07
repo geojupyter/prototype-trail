@@ -13,7 +13,14 @@ import pytest
 from trail import Trail
 from trail.asset import Asset, Assets
 from trail.checkpoint import Checkpoint
-from trail.event import AddAssetEvent, Events, RemoveAssetEvent, WatchdogEvent
+from trail.event import (
+    AddAssetEvent,
+    AddDirEvent,
+    Events,
+    RemoveAssetEvent,
+    RemoveDirEvent,
+    WatchdogEvent,
+)
 
 
 class TestTrail:
@@ -64,7 +71,7 @@ class TestTrail:
                 entry = trail.track(csv)
                 addition = trail.events.select[0]
                 assert isinstance(addition, AddAssetEvent)
-                assert addition.asset is entry
+                assert addition.entry is entry
                 assert trail.watchdog.observer.is_alive()
                 previous = len(trail.events)
                 with csv.open(encoding="utf-8") as stream:
@@ -75,7 +82,7 @@ class TestTrail:
                     ) is None:
                         await asyncio.sleep(0.01)
                 await trail.watchdog.stop()
-                assert opened.asset is entry
+                assert opened.entry is entry
                 assert trail.dir is None
                 assert trail.events.jsonl.path is None
                 assert list(root.iterdir()) == [csv]
@@ -97,7 +104,7 @@ class TestTrail:
                     while (opened := self.opened_event(trail, csv, previous)) is None:
                         await asyncio.sleep(0.01)
                 await trail.watchdog.stop()
-                assert opened.asset is entry
+                assert opened.entry is entry
                 assert not trail.watchdog.running
 
         asyncio.run(run())
@@ -124,7 +131,7 @@ class TestTrail:
                     ) is None:
                         await asyncio.sleep(0.01)
                 await trail.watchdog.stop()
-                assert opened.asset is entry
+                assert opened.entry is entry
 
             asyncio.run(run())
 
@@ -150,7 +157,7 @@ class TestTrail:
                         ) is None:
                             await asyncio.sleep(0.01)
 
-                assert opened.asset is entry
+                assert opened.entry is entry
                 # the session is torn down, and the next one schedules what is desired again
                 assert not trail.watchdog.running
                 assert not observer.is_alive()
@@ -204,7 +211,7 @@ class TestTrail:
                         await asyncio.sleep(0.01)
                 # quiet this trail so the reloaded ones are the only writers
                 await trail.watchdog.stop()
-                assert opened.asset is entry
+                assert opened.entry is entry
                 records = [
                     event.to_record()
                     for event in trail.events
@@ -246,9 +253,10 @@ class TestTrail:
                        ] == records
                 restored_entry = restored.assets[csv]
                 assert restored_entry.id == entry.id
+                # the first event adds the project directory's Dir
                 assert all(
-                    event.asset is restored_entry
-                    for event in restored.events
+                    event.entry is restored_entry
+                    for event in restored.events.select[1:]
                 )
                 previous = len(restored.events)
                 with csv.open(encoding="utf-8") as stream:
@@ -259,7 +267,7 @@ class TestTrail:
                     ) is None:
                         await asyncio.sleep(0.01)
                 await restored.watchdog.stop()
-                assert reopened.asset is restored_entry
+                assert reopened.entry is restored_entry
                 previous_ids = {
                     record["id"]
                     for record in records
@@ -286,7 +294,7 @@ class TestTrail:
                 assert csv not in restored.assets
                 removal = restored.events.select[-1]
                 assert isinstance(removal, RemoveAssetEvent)
-                assert removal.asset.id == entry.id
+                assert removal.entry.id == entry.id
                 previous = len(restored.events)
 
                 with csv.open(encoding='utf-8') as stream:
@@ -300,7 +308,7 @@ class TestTrail:
                         await asyncio.sleep(0.01)
                 await restored.watchdog.stop()
 
-                assert opened.asset.id == other_entry.id
+                assert opened.entry.id == other_entry.id
                 assert csv not in restored.assets
                 assert self.records(restored.events.select[previous:]) == [opened]
                 reloaded = Trail(root)
@@ -315,16 +323,22 @@ class TestTrail:
             assert trail.markers[0] == './'
             assert trail.dirs[root].root
             assert root / 'dataset.csv' in trail.assets
-            # the project directory is not an asset, so nothing about it is logged
+            # the project directory is a Dir, not an asset, and it is the first thing logged
             assert root not in trail.assets
-            events = len(trail.events)
-            # unmarking it is written to .markers, not to the log, and is not retroactive
+            addition = trail.events.select[0]
+            assert isinstance(addition, AddDirEvent)
+            assert addition.entry is trail.dirs[root]
+            assert addition.rule == './'
+            # unmarking it is logged, and is not retroactive
             with pytest.warns(UserWarning, match="leaves 1 asset tracked; offtrail removes it"):
                 assert trail.unmark('./') == ['./']
+            removal = trail.events.select[-1]
+            assert isinstance(removal, RemoveDirEvent)
+            assert removal.entry is addition.entry
             assert root / 'dataset.csv' in trail.assets
             reloaded = Trail(root)
             assert root not in reloaded.dirs
-            assert len(reloaded.events) == events
+            assert len(reloaded.events) == len(trail.events)
 
     def test_a_trail_without_markers_watches_nothing(self) -> None:
         with self.workspace() as root:
@@ -381,19 +395,20 @@ class TestTrail:
             csv.unlink()
 
             restored = Trail(root)
-            addition = restored.events.select[0]
-            removal = restored.events.select[1]
-            readdition = restored.events.select[2]
+            # the first event adds the project directory's Dir
+            addition = restored.events.select[1]
+            removal = restored.events.select[2]
+            readdition = restored.events.select[3]
             assert isinstance(addition, AddAssetEvent)
             assert isinstance(removal, RemoveAssetEvent)
             assert isinstance(readdition, AddAssetEvent)
             # the first was picked up by the default markers, the second tracked by hand
             assert addition.rule == '*.csv'
             assert readdition.rule is None
-            assert addition.asset is removal.asset
-            assert addition.asset.id == original_entry.id
-            assert readdition.asset is restored.assets[csv]
-            assert readdition.asset.id == current_entry.id
+            assert addition.entry is removal.entry
+            assert addition.entry.id == original_entry.id
+            assert readdition.entry is restored.assets[csv]
+            assert readdition.entry.id == current_entry.id
             assert restored.events.jsonl.path.read_bytes() == history
 
     def test_deleted_csv_history_can_be_restored(self) -> None:
@@ -462,7 +477,7 @@ class TestTrail:
             trail.offtrail(other_csv)
             assert len(positions[:]) == 5
             assert isinstance(positions[-1], RemoveAssetEvent)
-            assert positions[-1].asset is second.asset
+            assert positions[-1].entry is second.entry
             assert trail.events.ids[-1] == positions[-1].id
 
             try:
@@ -549,9 +564,10 @@ class TestTrail:
                 await trail.watchdog.stop()
 
                 assert trail.events.select[-1].event_type == 'deleted'
+                # the first event adds the project directory's Dir
                 assert all(
-                    event.asset is entry
-                    for event in trail.events
+                    event.entry is entry
+                    for event in trail.events.select[1:]
                 )
                 history = trail.events.jsonl.path.read_bytes()
                 expected_ids = trail.events.ids.copy()
@@ -670,7 +686,7 @@ class TestTrail:
                 nested_entry = trail.assets[nested]
                 assert self.records(trail.assets) == [file_entry, nested_entry]
                 # a new subfolder of a root is watched, but it is not a Dir
-                assert list(trail.dirs) == [root]
+                assert list(trail.dirs.path2entry) == [root]
                 assert directory in trail.watchdog.desired()
                 rules = [
                     event.rule
@@ -740,14 +756,15 @@ class TestTrail:
     def test_legacy_integer_ids_are_normalized_on_reload(self) -> None:
         with self.workspace() as root:
             csv = root / 'dataset.csv'
-            trail = Trail(root)
+            # without markers, the asset's event is the only one
+            trail = Trail(root, markers=None)
             entry = trail.track(csv)
             event = trail.events.select[0]
             legacy_metadata = {'id': int(trail.id, 16)}
             trail.json.path.write_text(json.dumps(legacy_metadata), encoding='utf-8')
             legacy_event = event.to_record()
             legacy_event['id'] = int(event.id, 16)
-            legacy_event['asset'] = int(entry.id, 16)
+            legacy_event['entry'] = int(entry.id, 16)
             trail.events.jsonl.path.write_text(
                 json.dumps(legacy_event) + '\n',
                 encoding='utf-8',
@@ -758,7 +775,7 @@ class TestTrail:
             assert restored.assets.ids == [entry.id]
             assert restored.events.ids == [event.id]
             assert restored.assets[entry.id] is restored.assets.select[0]
-            assert restored.events[event.id].asset is restored.assets[entry.id]
+            assert restored.events[event.id].entry is restored.assets[entry.id]
             restored.offtrail(csv)
             reloaded = Trail(root)
             assert reloaded.id == trail.id
@@ -789,7 +806,7 @@ class TestTrail:
                             opened := self.opened_event(trail, new_file, previous)
                     ) is None:
                         await asyncio.sleep(0.01)
-                assert opened.asset is new_file_entry
+                assert opened.entry is new_file_entry
 
                 subdirectory = folder / 'nested'
                 subdirectory.mkdir()
@@ -806,7 +823,7 @@ class TestTrail:
                 assert new_file_entry.path == new_file
                 assert nested_file_entry.path == nested_file
                 # the new subfolder is watched, but gets no Dir
-                assert list(trail.dirs) == [folder]
+                assert list(trail.dirs.path2entry) == [folder]
                 assert subdirectory in trail.watchdog.desired()
 
         asyncio.run(run())
@@ -893,7 +910,7 @@ class TestTrail:
                 assert asset.fingerprint[:2] == (2, 5)
                 # its inside is never walked, whatever the markers say
                 assert cube / 'zarr.json' not in trail.assets
-                addition = trail.events.select[0]
+                addition = trail.events.select[1]
                 assert addition.rule == '*.zarr'
                 assert addition.st_size == 5
                 assert cube in trail.watchdog.desired()
@@ -913,7 +930,7 @@ class TestTrail:
                 recorded = self.records(trail.events.select[previous:])
                 # the writes inside are recorded against the container, not file by file
                 assert all(
-                    event.asset is asset
+                    event.entry is asset
                     and event.src_path == str(cube)
                     for event in recorded
                 )

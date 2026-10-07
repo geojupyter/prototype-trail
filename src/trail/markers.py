@@ -670,12 +670,12 @@ class Markers(
 
     def _changed(self) -> None:
         """
-        Write the lines through to the file, then drop `trail.dirs`, which is built from them,
-        and reconcile the watchdog with the Dirs built in its place. Every change calls it.
+        Write the lines through to the file, bring `trail.dirs` in line with them, and reconcile
+        the watchdog with the Dirs. Every change calls it.
         """
         self.text.replace(self.data)
         trail = self._trail
-        vars(trail).pop('dirs', None)
+        trail.dirs.refresh()
         trail.watchdog.reconcile()
 
     def _numbered(self) -> Iterator[tuple[str, str]]:
