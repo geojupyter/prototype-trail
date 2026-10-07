@@ -167,8 +167,14 @@ class TestMarkers:
 
         asyncio.run(run())
 
-    def test_every_preset_watches_the_project_and_marks_extensions(self) -> None:
+    def test_the_default_preset_only_watches_the_project(self) -> None:
+        lines = (MARKERS / 'default.txt').read_text(encoding='utf-8').splitlines()
+        assert lines == ['./']
+
+    def test_every_other_preset_watches_the_project_and_marks_extensions(self) -> None:
         for name in available():
+            if name == 'default':
+                continue
             lines = (MARKERS / f'{name}.txt').read_text(encoding='utf-8').splitlines()
             assert lines[0] == './'
             assert lines[1:]
@@ -182,8 +188,8 @@ class TestMarkers:
             trail = Trail(root)
             default = (MARKERS / 'default.txt').read_text(encoding='utf-8')
             assert (root / '.markers').read_text(encoding='utf-8') == default
-            assert '*.csv' in trail.markers
-            assert root / 'top.csv' in trail.assets
+            assert list(trail.markers) == ['./']
+            assert root / 'top.csv' not in trail.assets
             assert not trail.markers.warnings
 
     def test_a_new_trail_copies_markers_from_a_path(self) -> None:

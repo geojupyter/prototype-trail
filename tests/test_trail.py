@@ -285,7 +285,8 @@ class TestTrail:
                 csv = root / 'dataset.csv'
                 other_csv = root / 'other.csv'
                 other_csv.write_text('name,value\nother,7\n', encoding='utf-8')
-                trail = Trail(root)
+                # the reopened Trail rescans for csv files, which must not bring this one back
+                trail = Trail(root, markers='general')
                 entry = trail.track(csv)
                 other_entry = trail.track(other_csv)
                 trail.offtrail(csv)
@@ -319,7 +320,7 @@ class TestTrail:
 
     def test_a_new_trail_writes_its_project_directory_marker(self) -> None:
         with self.workspace() as root:
-            trail = Trail(root)
+            trail = Trail(root, markers='general')
             assert trail.markers[0] == './'
             assert trail.dirs[root].root
             assert root / 'dataset.csv' in trail.assets
@@ -386,7 +387,7 @@ class TestTrail:
     def test_track_untrack_and_retrack_history_can_be_restored(self) -> None:
         with self.workspace() as root:
             csv = root / 'dataset.csv'
-            trail = Trail(root)
+            trail = Trail(root, markers='general')
             original_entry = trail.track(csv)
             trail.offtrail(csv)
             current_entry = trail.track(csv)
@@ -402,7 +403,7 @@ class TestTrail:
             assert isinstance(addition, AddAssetEvent)
             assert isinstance(removal, RemoveAssetEvent)
             assert isinstance(readdition, AddAssetEvent)
-            # the first was picked up by the default markers, the second tracked by hand
+            # the first was picked up by the general markers, the second tracked by hand
             assert addition.rule == '*.csv'
             assert readdition.rule is None
             assert addition.entry is removal.entry
@@ -832,7 +833,7 @@ class TestTrail:
         async def run() -> None:
             with self.workspace() as root:
                 csv = root / 'dataset.csv'
-                trail = Trail(root)
+                trail = Trail(root, markers='general')
                 entry = trail.track(csv)
                 identifier = entry.id
                 renamed = root / 'renamed.csv'

@@ -21,8 +21,6 @@ from trail.trail import Trail
 ENTER = "\r"
 UP = "\x1b[A"
 DOWN = "\x1b[B"
-RIGHT = "\x1b[C"
-LEFT = "\x1b[D"
 ESCAPE = "\x1b"
 TAB = "\t"
 INTERRUPT = "\x03"
@@ -92,9 +90,8 @@ class TestInit:
             assert (root / ".markers").read_text(encoding="utf-8") == default
             assert list(trail.markers) == self.default()
             assert trail.dirs[root].root
-            assert root / "top.csv" in trail.assets
-            assert root / "folder" / "nested.csv" in trail.assets
-            assert root / "notes.md" not in trail.assets
+            # the default watches the project but marks no files
+            assert not trail.assets
 
     def test_escape_turns_down_the_default_markers(self) -> None:
         with self.workspace() as root:
@@ -156,6 +153,7 @@ class TestInit:
             (outside / "kept.md").write_text("a\n", encoding="utf-8")
             trail = self.run(
                 root,
+                DOWN,
                 ENTER,
                 "notes.md",
                 ENTER,
@@ -182,6 +180,7 @@ class TestInit:
             (outside / "kept.md").write_text("a\n", encoding="utf-8")
             trail = self.run(
                 root,
+                DOWN,
                 ENTER,
                 str(outside / "kept.md"),
                 ENTER,
@@ -203,22 +202,18 @@ class TestInit:
             (root / "other.md").write_text("a\n", encoding="utf-8")
             paste = "\x1b[200~notes.md   \r\nother.md\r\n*.csv\r\n\x1b[201~"
             single = "\x1b[200~*.txt\x1b[201~"
-            trail = self.run(root, ENTER, paste, ENTER, single, ENTER, ENTER)
+            trail = self.run(root, DOWN, ENTER, paste, ENTER, single, ENTER, ENTER)
             assert root / "notes.md" in trail.assets
             assert root / "other.md" in trail.assets
             # the lines already listed stay, rather than being toggled off
             assert "*.csv" in trail.markers
             assert "*.txt" in trail.markers
 
-    def test_right_and_left_choose_what_the_arrows_scroll(self) -> None:
+    def test_the_arrows_choose_another_marker_set(self) -> None:
         with self.workspace() as root:
-            # scrolling the default file's lines leaves the default chosen
-            trail = self.run(root, RIGHT, DOWN, DOWN, ENTER, ENTER)
-            assert list(trail.markers) == self.default()
-        with self.workspace() as root:
-            trail = self.run(root, RIGHT, DOWN, LEFT, DOWN, ENTER, ENTER)
+            trail = self.run(root, DOWN, ENTER, ENTER)
             assert list(trail.markers) == (
-                (MARKERS / "geospatial.txt").read_text(encoding="utf-8").splitlines()
+                (MARKERS / "general.txt").read_text(encoding="utf-8").splitlines()
             )
 
     def test_reinitializing_starts_from_the_default_markers(self) -> None:
@@ -430,74 +425,23 @@ class TestPicker:
             assert picker.accept() is None
             assert "missing" in picker.error
 
-    def test_a_file_longer_than_the_preview_scrolls_once_it_is_being_read(self) -> None:
+    def test_a_file_longer_than_the_preview_is_cut_off(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             long = root / "long.markers"
             long.write_text("".join(f"x{i}\n" for i in range(200)), encoding="utf-8")
-            short = root / "short.markers"
-            short.write_text("csv\n", encoding="utf-8")
-            picker = Picker([("long", long), ("short", short)], root)
+            picker = Picker([("long", long)], root)
             viewport = picker.viewport
             # held to the terminal, which the file outruns
             assert viewport < 200
-            assert len(picker._content()) == 200
-
-            def rules() -> list[str]:
-                return [
-                    text
-                    for style, text in picker._preview()
-                    if text in (" │ ", " ↑ ", " ↓ ")
-                ]
-
-            def highlighted() -> list[str]:
-                return [
-                    text.rstrip()
-                    for style, text in picker._preview()
-                    if "reverse" in style
-                ]
-
-            assert rules()[0] == " │ "
-            assert rules()[-1] == " ↓ "
-            assert highlighted() == []
-            picker.reading = True
-            assert highlighted() == ["x0"]
-            picker.move(1)
-            assert picker.index == 0
-            assert highlighted() == ["x1"]
-            # the preview holds still until the cursor runs off its bottom
-            assert picker.offset == 0
-            picker.move(viewport)
-            assert picker.offset == 2
-            assert rules()[0] == " ↑ "
-            assert highlighted() == [f"x{viewport + 1}"]
-            picker.move(1000)
-            assert picker.offset == 200 - viewport
-            assert rules()[-1] == " │ "
-            assert highlighted() == ["x199"]
-            picker.move(-1000)
-            assert picker.offset == 0
-            # back on the listing, the next file is read from its top
-            picker.reading = False
-            picker.move(1)
-            assert picker.index == 1
-            assert picker.offset == 0
-            assert picker.line == 0
-            assert len(rules()) == viewport
-
-    def test_the_cursor_shows_on_a_blank_line(self) -> None:
-        with TemporaryDirectory() as temporary:
-            path = Path(temporary) / "gaps.markers"
-            path.write_text("# tabular\n\ncsv\n", encoding="utf-8")
-            picker = Picker([("gaps", path)], Path(temporary))
-            picker.reading = True
-            picker.move(1)
-            highlighted = [
+            texts = [
                 text
-                for style, text in picker._preview()
-                if "reverse" in style
+                for _, text in picker._preview()
+                if text not in (" │ ", "\n")
             ]
-            assert highlighted == [" " * len("# tabular")]
+            assert len(texts) == viewport
+            assert texts[0] == "x0"
+            assert texts[-1] == f"… {200 - viewport + 1} more lines"
 
     def test_only_the_markers_files_are_offered_and_the_default_first(self) -> None:
         labels = [
