@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING, ClassVar, Final, Self
 from uuid import uuid4
 
 from trail.asset import Asset
@@ -19,6 +19,9 @@ if TYPE_CHECKING:
     from trail.dir import Dir
     from trail.entry import Entry
     from trail.trail import Trail
+
+
+EVENT_TYPES: Final = frozenset({"created", "modified", "deleted", "moved", "opened"})
 
 
 class Get:
@@ -147,7 +150,9 @@ class Event:
         timestamp in ISO format.
         """
         out = {
-            field.name: getattr(self, field.name) for field in fields(self) if field.name != "entry"
+            field.name: getattr(self, field.name)
+            for field in fields(self)
+            if field.name != "entry"
         }
         out["cls"] = type(self).__name__
         out["timestamp"] = self.timestamp.isoformat()
@@ -381,20 +386,19 @@ class WatchdogEvent(Event):
                     entry.track()
             return entry
 
-        if self.event_type not in {
-            "created",
-            "modified",
-            "deleted",
-            "moved",
-            "opened",
-        }:
+        if self.event_type not in EVENT_TYPES:
             return None
         source = Path(self.src_path).expanduser().resolve()
         destination = None
         if self.event_type == "moved" and self.dest_path:
             destination = Path(self.dest_path).expanduser().resolve()
         for path in (source, destination):
-            if path is not None and (path in trail._offtrailed_paths or trail._ignored(path)):
+            if path is None:
+                continue
+            if (
+                path in trail._offtrailed_paths
+                or trail._ignored(path)
+            ):
                 return None
         entry = self._find(trail, source, destination)
         if entry is None:
@@ -542,7 +546,10 @@ class JSONL(Node):
         path = self.path
         if path is None:
             return
-        text = "".join(json.dumps(event.to_record(), ensure_ascii=False) + "\n" for event in events)
+        text = "".join(
+            json.dumps(event.to_record(), ensure_ascii=False) + "\n"
+            for event in events
+        )
         if not text:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -675,7 +682,10 @@ class Events(Collection[str, Event]):
             if not isinstance(event, Event):
                 raise TypeError(f"Expected Event, got {type(event).__name__}")
             batch[event.id] = event
-        replacing = any(identifier in self.data for identifier in batch)
+        replacing = any(
+            identifier in self.data
+            for identifier in batch
+        )
         if not replacing:
             self.jsonl.append(batch.values())
         appended = [

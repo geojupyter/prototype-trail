@@ -34,6 +34,16 @@ if TYPE_CHECKING:
     from trail.trail import Trail
 
 STOP: Final = object()
+EVENT_FILTER: Final = [
+    FileCreatedEvent,
+    FileModifiedEvent,
+    FileDeletedEvent,
+    FileMovedEvent,
+    FileOpenedEvent,
+    DirCreatedEvent,
+    DirDeletedEvent,
+    DirMovedEvent,
+]
 
 
 class Handler(FileSystemEventHandler, Node):
@@ -88,16 +98,12 @@ class Watchdog(Node):
             type(self).__name__,
             f'    running: {self.running!r}',
         ]
-        lines.extend(
-            list_repr(
-                'watches',
-                (
-                    str(directory)
-                    for directory in directories[:self.repr_limit]
-                ),
-                len(directories),
-            )
+        shown = (
+            str(directory)
+            for directory in directories[:self.repr_limit]
         )
+        rendered = list_repr('watches', shown, len(directories))
+        lines.extend(rendered)
         return '\n'.join(lines)
 
     @cached_property
@@ -144,16 +150,7 @@ class Watchdog(Node):
             self.handler,
             str(directory),
             recursive=False,
-            event_filter=[
-                FileCreatedEvent,
-                FileModifiedEvent,
-                FileDeletedEvent,
-                FileMovedEvent,
-                FileOpenedEvent,
-                DirCreatedEvent,
-                DirDeletedEvent,
-                DirMovedEvent,
-            ],
+            event_filter=EVENT_FILTER,
         )
 
     def unwatch(self, directory: Path) -> None:
@@ -192,30 +189,30 @@ class Watchdog(Node):
             if not directory.recursive:
                 out.add(path)
             elif (
-                within is None
-                or path.is_relative_to(within)
+                    within is None
+                    or path.is_relative_to(within)
             ):
                 out.update(self._subtree(path))
             elif (
-                within.is_relative_to(path)
-                and self._reaches(path, within)
+                    within.is_relative_to(path)
+                    and self._reaches(path, within)
             ):
                 out.update(self._subtree(within))
         for asset in trail.assets:
             out.add(asset.directory)
             if asset.is_directory:
                 out.add(asset.path)
+        if within is not None:
+            out = {
+                path
+                for path in out
+                if path.is_relative_to(within)
+            }
         return {
             path
             for path in out
-            if (
-                (
-                    within is None
-                    or path.is_relative_to(within)
-                )
-                and not trail._ignored(path)
-                and path.is_dir()
-            )
+            if not trail._ignored(path)
+            and path.is_dir()
         }
 
     def _subtree(self, root: Path) -> list[Path]:
@@ -233,9 +230,9 @@ class Watchdog(Node):
         return out
 
     def _reaches(
-        self,
-        root: Path,
-        path: Path,
+            self,
+            root: Path,
+            path: Path,
     ) -> bool:
         """Whether a walk of `root` would descend as far as `path`."""
         descends = self._trail.assets._descends
@@ -252,8 +249,8 @@ class Watchdog(Node):
         """
         desired = self.desired()
         if (
-            not desired
-            and not self.watches
+                not desired
+                and not self.watches
         ):
             return
         if not self.ensure():
@@ -452,8 +449,8 @@ class Watchdog(Node):
             for parent in Path(text).parents:
                 asset = path2asset.get(parent)
                 if (
-                    asset is not None
-                    and asset.is_directory
+                        asset is not None
+                        and asset.is_directory
                 ):
                     return asset
         return None
@@ -472,8 +469,8 @@ class Watchdog(Node):
             self.invalidate(source)
             return
         if (
-            event.event_type == "moved"
-            and event.dest_path
+                event.event_type == "moved"
+                and event.dest_path
         ):
             destination = Path(event.dest_path).resolve()
             if not trail._ignored(source):

@@ -58,13 +58,8 @@ class Dir(Entry):
             f'    path: {bare_repr(str(self.path))}',
             f'    root: {self.root!r}',
         ]
-        lines.extend(
-            list_repr(
-                'scopes',
-                self.scopes.relative,
-                len(self.scopes),
-            )
-        )
+        rendered = list_repr('scopes', self.scopes.relative, len(self.scopes))
+        lines.extend(rendered)
         return '\n'.join(lines)
 
     @property
@@ -123,12 +118,14 @@ def build(
         if base is None:
             unanchored.append(line)
             continue
+        lineage = (base, *base.parents)
+        inside = any(
+            container(path)
+            for path in lineage
+        )
         if (
             base in excluded
-            or any(
-                container(path)
-                for path in (base, *base.parents)
-            )
+            or inside
         ):
             continue
         order[base] = None

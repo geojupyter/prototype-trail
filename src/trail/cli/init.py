@@ -317,34 +317,33 @@ class Picker:
         )
         # an inline application is handed every row below the cursor; neither of these may
         # take more than its content, or the picker fills the terminal
-        body = VSplit(
-            [
-                Window(
-                    FormattedTextControl(self._listing),
-                    width=width + 4,
-                    height=lambda: Dimension(max=self.viewport),
-                    dont_extend_height=True,
-                ),
-                Window(
-                    FormattedTextControl(self._preview),
-                    height=lambda: Dimension(max=self.viewport),
-                    wrap_lines=False,
-                    dont_extend_height=True,
-                ),
-            ]
+        listing = Window(
+            FormattedTextControl(self._listing),
+            width=width + 4,
+            height=lambda: Dimension(max=self.viewport),
+            dont_extend_height=True,
         )
+        preview = Window(
+            FormattedTextControl(self._preview),
+            height=lambda: Dimension(max=self.viewport),
+            wrap_lines=False,
+            dont_extend_height=True,
+        )
+        body = VSplit([listing, preview])
+        prompt = BeforeInput("  path: ", style="class:info")
         field = Window(
             BufferControl(
                 self.buffer,
-                input_processors=[BeforeInput("  path: ", style="class:info")],
+                input_processors=[prompt],
             ),
             height=1,
         )
+        message = Window(
+            FormattedTextControl(lambda: [("class:error", f"  {self.error}")]),
+            height=1,
+        )
         error = ConditionalContainer(
-            Window(
-                FormattedTextControl(lambda: [("class:error", f"  {self.error}")]),
-                height=1,
-            ),
+            message,
             filter=Condition(lambda: bool(self.error)),
         )
         menu = Float(

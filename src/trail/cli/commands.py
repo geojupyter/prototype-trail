@@ -408,11 +408,15 @@ class HelpCommand(Command):
         listed = self._console.commands.listed
         # the longest usage sets the column, so a command with a long one cannot run into its
         # own description the way a fixed width let it
-        width = max(
-            HELP_WIDTH,
-            *(len(command.usage) for command in listed),
-            *(len(keys) for keys, _ in KEYS),
-        )
+        usages = [
+            len(command.usage)
+            for command in listed
+        ]
+        bindings = [
+            len(keys)
+            for keys, _ in KEYS
+        ]
+        width = max(HELP_WIDTH, *usages, *bindings)
         feed.info("commands")
         for command in listed:
             feed.append(

@@ -217,13 +217,13 @@ def walk(
     )
     kept: list[Path] = []
     for root in ordered:
-        if any(
+        covered = any(
             walks[ancestor]
             and root.is_relative_to(ancestor)
             for ancestor in kept
-        ):
-            continue
-        kept.append(root)
+        )
+        if not covered:
+            kept.append(root)
     for root in kept:
         if not root.is_dir():
             continue
@@ -233,10 +233,9 @@ def walk(
                     path = Path(entry.path)
                     if entry.is_symlink():
                         continue
-                    if (
-                        entry.is_file()
-                        or container(path)
-                    ):
+                    if entry.is_file():
+                        yield path
+                    elif container(path):
                         yield path
             continue
         for directory, dirnames, filenames in os.walk(root):

@@ -115,12 +115,13 @@ class ScopePaths(Scope):
         """
         word = self.word(document)
         body = word.removeprefix("!")
+        pathlike = (
+            body.startswith(("/", "~", "."))
+            or "/" in body
+        )
         if (
             MAGIC.search(body)
-            or not (
-                body.startswith(("/", "~", "."))
-                or "/" in body
-            )
+            or not pathlike
         ):
             return
         cwd = self.cwd()
@@ -129,7 +130,8 @@ class ScopePaths(Scope):
             expanduser=True,
             get_paths=lambda: [str(cwd)],
         )
-        for completion in paths.get_completions(Document(body, len(body)), complete_event):
+        typed = Document(body, len(body))
+        for completion in paths.get_completions(typed, complete_event):
             target = (cwd / Path(body + completion.text).expanduser()).resolve()
             if target.is_relative_to(metadata):
                 continue

@@ -271,9 +271,12 @@ class Trail(Node):
         """The .trail a Trail opened on `dir` would open, or None if it would create one."""
         dir = Path(dir).expanduser().resolve()
         # like GIT_CEILING_DIRECTORIES, the search never climbs into a ceiling
+        configured = os.environ.get("TRAIL_CEILING_DIRECTORIES", "")
         ceilings = {
-            Path(ceiling).expanduser().resolve()
-            for ceiling in os.environ.get("TRAIL_CEILING_DIRECTORIES", "").split(os.pathsep)
+            Path(ceiling)
+            .expanduser()
+            .resolve()
+            for ceiling in configured.split(os.pathsep)
             if ceiling
         }
         parents = takewhile(
@@ -310,7 +313,9 @@ class Trail(Node):
             st_mtime: 2026-10-02 23:39:37
         """
         requested = dict.fromkeys(
-            Path(path).expanduser().resolve()
+            Path(path)
+            .expanduser()
+            .resolve()
             for path in paths
         )
         new = any(
@@ -353,7 +358,12 @@ class Trail(Node):
 
     def offtrail(self, *paths: PathLike) -> Asset | list[Asset]:
         """Offtrails the specified filesystem paths from the Trail."""
-        requested = dict.fromkeys(Path(path).expanduser().resolve() for path in paths)
+        requested = dict.fromkeys(
+            Path(path)
+            .expanduser()
+            .resolve()
+            for path in paths
+        )
         offtrailed = []
         for path in requested:
             asset = self.assets.get(path)

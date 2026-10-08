@@ -306,7 +306,8 @@ class Dir(Node):
                 and isinstance(child, node_type)
             ):
                 return child
-        node = node_type(self, Path(filename).stem, Path(filename).suffix)
+        name = Path(filename)
+        node = node_type(self, name.stem, name.suffix)
         self._adhoc.append(node)
         return node
 

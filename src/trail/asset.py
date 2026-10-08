@@ -268,17 +268,14 @@ class Assets(Entries[Asset]):
             for parent in (path, *path.parents)
             if parent in path2dir
         )
-        out = {path: recursive}
         # a Dir below the path is walked as deep as it reaches
-        out.update(
-            (directory.path, directory.recursive)
+        below = {
+            directory.path: directory.recursive
             for directory in dirs
-            if (
-                directory.path != path
-                and directory.path.is_relative_to(path)
-            )
-        )
-        return out
+            if directory.path != path
+            and directory.path.is_relative_to(path)
+        }
+        return {path: recursive} | below
 
     def _markable(self, path: Path) -> bool:
         """
@@ -287,19 +284,16 @@ class Assets(Entries[Asset]):
         """
         trail = self._trail
         # the stat comes last, since most candidates fail before it
-        return (
-            path not in self.path2entry
-            and path not in trail._offtrailed_paths
-            and not trail._ignored(path)
-            and trail.dirs.tracks(path)
-            and (
-                path.is_file()
-                or (
-                    container(path)
-                    and path.is_dir()
-                )
-            )
-        )
+        if (
+            path in self.path2entry
+            or path in trail._offtrailed_paths
+            or trail._ignored(path)
+            or not trail.dirs.tracks(path)
+        ):
+            return False
+        if path.is_file():
+            return True
+        return container(path) and path.is_dir()
 
     def _descends(self, path: Path) -> bool:
         """
@@ -328,10 +322,9 @@ class Assets(Entries[Asset]):
             return False
         # a hidden directory is walked only if a Dir sits at or below it, which keeps .git and
         # .venv out of the walk
-        return (
-            not path.name.startswith('.')
-            or any(
-                directory.path.is_relative_to(path)
-                for directory in trail.dirs
-            )
+        if not path.name.startswith('.'):
+            return True
+        return any(
+            directory.path.is_relative_to(path)
+            for directory in trail.dirs
         )

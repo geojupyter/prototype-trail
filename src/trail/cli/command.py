@@ -123,9 +123,14 @@ class Command(Node):
             if tracked:
                 matches = self.tracked(expanded)
             else:
+                found = iglob(
+                    str(expanded),
+                    root_dir=self._console.root,
+                    recursive=True,
+                )
                 matches = sorted(
                     self.absolute(Path(match))
-                    for match in iglob(str(expanded), root_dir=self._console.root, recursive=True)
+                    for match in found
                 )
             if not matches:
                 self._feed.error(f"no matches: {token}")
@@ -250,7 +255,8 @@ class Listing(Command):
         if "=" in word:
             return
         tokens = document.text_before_cursor.split()
-        first = len(tokens) <= 1 or (len(tokens) == 2 and word)
+        first = len(tokens) <= 1
+        first |= len(tokens) == 2 and bool(word)
         # offered only where it is the action, and not where it would be a term
         if first and CLEAR.startswith(word):
             yield Completion(CLEAR, start_position=-len(word))

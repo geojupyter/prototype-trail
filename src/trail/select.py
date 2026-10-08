@@ -198,13 +198,12 @@ class Select[T: Selectable[Any], V](Node):
         out = copy(collection)
         # whatever the original cached, such as its jsonl or path2entry, was built from it and
         # is shared by the shallow copy; dropped, it is rebuilt from the copy on access
+        owner = type(out)
         cached = [
             name
             for name in vars(out)
-            if (
-                    name != '_parent'
-                    and isinstance(getattr(type(out), name, None), cached_property)
-            )
+            if name != '_parent'
+            and isinstance(getattr(owner, name, None), cached_property)
         ]
         for name in cached:
             del vars(out)[name]

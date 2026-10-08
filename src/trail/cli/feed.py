@@ -61,13 +61,18 @@ class Feed(Node):
         row are replaced with spaces so each row stays on one line. Tabs are replaced with four
         spaces.
         """
-        appended = [
-            [
-                (fragment[0], fragment[1].replace("\n", " ").replace("\t", "    "))
-                for fragment in row
+        appended = []
+        for row in rows:
+            flattened = [
+                (
+                    style,
+                    text
+                    .replace("\n", " ")
+                    .replace("\t", "    "),
+                )
+                for style, text, *_ in row
             ]
-            for row in rows
-        ]
+            appended.append(flattened)
         if not appended:
             return
         self.rows.extend(appended)

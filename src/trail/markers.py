@@ -84,14 +84,12 @@ def parse(
         index = len(parts)
     else:
         # the last segment names files, so it never joins the base even without a wildcard
-        index = next(
-            (
-                i
-                for i, part in enumerate(parts[:-1])
-                if MAGIC.search(part)
-            ),
-            len(parts) - 1,
+        wildcards = (
+            i
+            for i, part in enumerate(parts[:-1])
+            if MAGIC.search(part)
         )
+        index = next(wildcards, len(parts) - 1)
     base = anchor.joinpath(*parts[:index]).resolve()
     rest = parts[index:]
     if not rest:
@@ -269,14 +267,12 @@ def canonical_path(
     """
     trailing = body.endswith('/')
     parts = body.rstrip('/').split('/')
-    index = next(
-        (
-            i
-            for i, part in enumerate(parts)
-            if MAGIC.search(part)
-        ),
-        len(parts),
+    wildcards = (
+        i
+        for i, part in enumerate(parts)
+        if MAGIC.search(part)
     )
+    index = next(wildcards, len(parts))
     literal = '/'.join(parts[:index])
     rest = parts[index:]
     if (
@@ -285,13 +281,11 @@ def canonical_path(
     ):
         literal = '/'
     base = (cwd / Path(literal or '.').expanduser()).resolve()
-    directory = (
-        trailing
-        or (
-            not rest
-            and base.is_dir()
-        )
+    bare = (
+        not rest
+        and base.is_dir()
     )
+    directory = trailing or bare
     if base.is_relative_to(project):
         segments = [*base.relative_to(project).parts, *rest]
         if not segments:
@@ -299,14 +293,12 @@ def canonical_path(
         line = '/'.join(segments)
         if directory:
             line += '/'
-        alone = (
-            '/' in line.rstrip('/')
-            or (
-                line.endswith('/')
-                and not negated
-                and not MAGIC.search(line)
-            )
+        root = (
+            line.endswith('/')
+            and not negated
+            and not MAGIC.search(line)
         )
+        alone = '/' in line.rstrip('/') or root
         # without its './', a line naming something directly in the project would be a root
         # scope
         if not alone:
@@ -726,17 +718,18 @@ class Markers(
             except ValueError as error:
                 out.append(f'{where}: {error}')
                 continue
+            names_asset = False
             if (
                 base is not None
                 and not pattern
-                and (
-                    base in tracked
-                    or any(
-                        container(path)
-                        for path in (base, *base.parents)
-                    )
-                )
             ):
+                lineage = (base, *base.parents)
+                names_asset = base in tracked
+                names_asset |= any(
+                    container(path)
+                    for path in lineage
+                )
+            if names_asset:
                 out.append(
                     f"{where}: '{line}' names a directory asset, which is never walked; "
                     f"it is left out"

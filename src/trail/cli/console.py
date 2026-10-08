@@ -316,10 +316,15 @@ class Run(Node):
         # the first wakeup slips through the gap
         watching = trail.events.watch()
         async with trail.watchdog.context():
-            tasks = [
-                asyncio.create_task(self.stream(watching), name="trail-console-stream"),
-                asyncio.create_task(self.monitor(), name="trail-console-monitor"),
-            ]
+            streaming = asyncio.create_task(
+                self.stream(watching),
+                name="trail-console-stream",
+            )
+            monitoring = asyncio.create_task(
+                self.monitor(),
+                name="trail-console-monitor",
+            )
+            tasks = [streaming, monitoring]
             try:
                 # a warning raised while events are applied, such as a Dir that was renamed,
                 # would otherwise be written over the command bar
