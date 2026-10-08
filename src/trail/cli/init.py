@@ -94,17 +94,17 @@ def tabbing() -> KeyBindings:
 
 class Picker:
     """
-    Lets the user choose the markers file `.markers` is copied from. The bundled files are
+    Lets the user choose the markers file a new `.markers` starts from. The bundled files are
     listed on the left, with a preview of the selected one on the right. A typed path loads a
     markers file of the user's own.
 
-    <UP> and <DOWN> move through the list. A file longer than the preview is cut off. Typing a
-    path previews that file instead. <ENTER> chooses the previewed file, and <ESCAPE> chooses
-    none.
+    <UP> and <DOWN> move through the list. A file longer than the preview is cut off, since
+    the editor that follows shows every line. Typing a path previews that file instead. <ENTER>
+    chooses the previewed file, and <ESCAPE> chooses none.
     """
 
     # terminal rows left to the question and its hints above the picker
-    margin = 15
+    margin = 14
 
     def __init__(
         self,
