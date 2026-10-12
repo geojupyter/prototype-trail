@@ -26,8 +26,8 @@ thousands of chunk files.
   access. A store moved somewhere unwatched is logged as deleted.
 - **Deferred.** A Trail-owned inotify reader, a journal of open accesses, and which arrays or
   tables an access touched.
-- **Delivery.** Twelve small PRs (§9), each leaving the tests passing. The status list below tracks
-  them.
+- **Delivery.** Twelve commits on one branch (§9), each leaving the tests passing. The status
+  list below tracks them, and the whole series is reviewed at once at the tip.
 
 The rest of the document is the detailed record: answers to review comments (§2), changes from the
 earlier 10-7 design (§3), measurements (§4), the design (§5-§8) and tests, invariants and limits
@@ -49,7 +49,7 @@ Three choices from the comments shape all of it:
 - **Few new names.** An access is an `Access`, the watchdog's run is its `session`, and a dirasset
   is a `DirAsset` whose `children` pattern names the files that belong to it.
 
-**This is a series of one-feature PRs.** §9 gives the order. Each one leaves the suite passing,
+**This is a series of one-feature commits.** §9 gives the order. Each one leaves the suite passing,
 as `notes/9-30.md` asks.
 
 The measurements cited here were run on 2026-10-08 on this machine: Linux 6.12, Python 3.12.14,
@@ -59,18 +59,18 @@ and §14 lists what still has to be checked.
 
 ## Status
 
-- [ ] PR 0: hygiene (prerequisite)
-- [ ] PR 1: `*.safe` in the geospatial preset
-- [ ] PR 2: gap 1, marking one dirasset
-- [ ] PR 3: `DirAsset` and `children`
-- [ ] PR 4: gap 4, what belongs to a dirasset
-- [ ] PR 5: `Watchdog.session` and the hand-off
-- [ ] PR 6: recursive watches, and gap 2
-- [ ] PR 7: `DirectoryAccessEvent`
-- [ ] PR 8: accesses
-- [ ] PR 9: dirasset lifecycle and moves
-- [ ] PR 10: console
-- [ ] PR 11 (optional): `select` on counts
+- [ ] Commit 0: hygiene (prerequisite)
+- [ ] Commit 1: `*.safe` in the geospatial preset
+- [ ] Commit 2: gap 1, marking one dirasset
+- [ ] Commit 3: `DirAsset` and `children`
+- [ ] Commit 4: gap 4, what belongs to a dirasset
+- [ ] Commit 5: `Watchdog.session` and the hand-off
+- [ ] Commit 6: recursive watches, and gap 2
+- [ ] Commit 7: `DirectoryAccessEvent`
+- [ ] Commit 8: accesses
+- [ ] Commit 9: dirasset lifecycle and moves
+- [ ] Commit 10: console
+- [ ] Commit 11 (optional): `select` on counts
 
 ## 1. Vocabulary
 
@@ -1124,12 +1124,16 @@ asset inside it", then logs its `AddAssetEvent`, records its inode, and ends wit
 `self.watchdog.reconcile()`. The `RemoveDirEvent` from `dirs.refresh` stays the last event, as
 `tests/test_dirs.py:120-125` expects.
 
-## 9. PRs, in order
+## 9. Commits, in order
 
-No PR migrates existing logs, assets or `project.json`. Every log written today stays readable
-after every PR.
+The commits go on one local branch off `dhodczak`, in this order, and are not pushed or opened as
+PRs. They are written in one run and reviewed together at the tip. Fixes from review go on top as
+new commits.
 
-### PR 0: hygiene
+No commit migrates existing logs, assets or `project.json`. Every log written today stays readable
+after every commit.
+
+### Commit 0: hygiene
 
 - Commit `src/trail/entry.py` and `tests/test_dirs.py`. HEAD imports `trail.entry` (`asset.py:10`,
   `dir.py:8`, `trail.py:15`) but does not contain it, so a clean checkout cannot import `trail`.
@@ -1142,18 +1146,18 @@ after every PR.
   `test_input.py:51`).
 - Fix `playground.Asset.open`, which returns None (`playground.py:172-178`).
 
-### PR 1: `*.safe`
+### Commit 1: `*.safe`
 
 - **Modules:** `markers/geospatial.txt`.
 - **Acceptance:** `test_the_geospatial_preset_tracks_safe_products`.
 
-### PR 2: gap 1
+### Commit 2: gap 1
 
 - **Modules:** `markers.py`, `cli/scopes.py`.
 - **Acceptance:** `test_a_dirasset_gets_no_slash`, `test_a_dotted_folder_keeps_its_slash`,
   `test_a_dirasset_line_draws_no_slash_warning`, `test_marking_one_dirasset_tracks_it`.
 
-### PR 3: `DirAsset` and `children`
+### Commit 3: `DirAsset` and `children`
 
 - **Modules:** `util.py` (`CHILDREN`, `EVERYTHING`, `is_dirasset` in place of `CONTAINERS` and
   `container`), `asset.py` (`DirAsset`, `Asset.from_path`), `event.py` (`JSONL._made`), and every
@@ -1162,7 +1166,7 @@ after every PR.
 - **Acceptance:** `test_a_tracked_directory_is_a_dirasset`, `test_a_dirasset_survives_a_reload`,
   `test_children_match_the_files_of_each_format` (the names of §5.3).
 
-### PR 4: gap 4
+### Commit 4: gap 4
 
 - **Modules:** `trail.py`, `asset.py` (`_markable`), `dir.py`, `markers.py`.
 - **Changed tests:** `test_trail.py:959-960` inverts. `test_dirs.py:116-129` expects the warning.
@@ -1171,7 +1175,7 @@ after every PR.
   `test_tracking_a_directory_offtrails_its_children`,
   `test_the_project_directory_cannot_be_tracked_whole`, `test_marking_inside_a_dirasset_tracks_no_chunk`.
 
-### PR 5: the session and the hand-off
+### Commit 5: the session and the hand-off
 
 - **Modules:** `session.py` (new: `Session`, `Watches`, `Arrival`, `Handler`, `STOP`),
   `watchdog.py` (`session`, `apply(session)`, `consume`, `stop`), `event.py` (`Watch.notify`).
@@ -1185,7 +1189,7 @@ after every PR.
   `test_a_handler_exception_does_not_stop_dispatch`,
   `test_notifying_from_another_thread_wakes_a_watcher`.
 
-### PR 6: recursive watches, and gap 2
+### Commit 6: recursive watches, and gap 2
 
 - **Modules:** `watchdog.py` (`desired`, `reconcile`, `covers`, removal of `_subtree`, `_reaches`,
   `extend`), `session.py` (the hidden rule and `hidden`), `trail.py` (`_track` reconciles).
@@ -1199,7 +1203,7 @@ after every PR.
   `test_a_dirasset_created_while_watching_is_watched`,
   `test_a_vanished_directory_fails_only_its_own_watch`.
 
-### PR 7: `DirectoryAccessEvent`
+### Commit 7: `DirectoryAccessEvent`
 
 - **Modules:** `event.py`, `util.py` (`clock_repr`, `OPS`), `cli/commands.py`
   (`EventsCommand.fields` gains `started` and `count`).
@@ -1207,7 +1211,7 @@ after every PR.
   `test_the_feed_renders_an_access`, `test_cls_finds_accesses_and_their_base`. Each uses its own
   fixture, since the shared ones in `test_select.py` and `test_listing.py` pin event positions.
 
-### PR 8: accesses
+### Commit 8: accesses
 
 - **Modules:** `session.py` (`Access`, `Accesses`, counting in `Handler`), `watchdog.py`
   (`record`, `flush`, deadlines, the exit hook, `idle_gap`), `asset.py` (`DirAsset.access`,
@@ -1229,7 +1233,7 @@ after every PR.
   `test_writing_below_the_top_level_is_counted`, `test_concurrent_reads_merge_into_one_access`,
   `test_reading_a_band_of_a_safe_product_is_recorded`.
 
-### PR 9: lifecycle and moves
+### Commit 9: lifecycle and moves
 
 - **Modules:** `watchdog.py` (`_directory` flushes first, the inode match), `asset.py`
   (`DirAsset.inode`).
@@ -1239,7 +1243,7 @@ after every PR.
   `test_a_dirasset_moved_between_watches_keeps_its_id`,
   `test_an_ancestor_rename_records_the_access_at_the_old_path`.
 
-### PR 10: console
+### Commit 10: console
 
 - **Modules:** `cli/console.py`, `cli/render.py`, `cli/commands.py`.
 - **Changes:** drain the feed after the watchdog context exits, so the accesses `stop()` sealed are
@@ -1249,7 +1253,7 @@ after every PR.
   (`:258-266`).
 - **Acceptance:** `test_the_feed_prints_the_accesses_stop_sealed`, `test_the_header_counts_open_accesses`.
 
-### PR 11 (optional): `select` on counts
+### Commit 11 (optional): `select` on counts
 
 Dotted fields that step through mappings, so `events count.modified>0` works. Today a field name
 cannot hold a dot (`select.py:19-22`).
@@ -1313,7 +1317,7 @@ cannot hold a dot (`select.py:19-22`).
 
 ## 14. Validation tasks
 
-| # | Task | PR |
+| # | Task | Commit |
 |---|---|---|
 | V1 | directories under typical `.venv`, `node_modules` and `.git`, the time to place a recursive project watch on Linux, and the headroom in `max_user_watches` on a stock Ubuntu machine | 6 |
 | V2 | recursive watches on macOS FSEvents and Windows: cost to place, a write below the top level, a root deleted and recreated | 6, 9 |
