@@ -35,12 +35,12 @@ from trail.trail import Trail
 
 class Console(Node):
     """
-    The interactive session. Events recorded by the watchdog are printed to the feed as they
-    happen. The command bar at the bottom runs commands such as `track` and `events`.
+    The interactive session. Events the watchdog records are printed to the feed as they happen. The
+    command bar at the bottom runs commands such as `track` and `events`.
 
-    Only the header and the command bar are drawn by prompt_toolkit. The feed above them is
-    ordinary terminal output, so scrollback, text selection and the scrollbar work as usual.
-    The alternate screen is not used because it would disable all three.
+    prompt_toolkit draws only the header and the command bar. The feed above them is ordinary
+    terminal output, so scrollback, text selection and the scrollbar work as usual. The alternate
+    screen is not used, since it would disable all three.
     """
 
     _parent: Trail
@@ -62,10 +62,10 @@ class Console(Node):
     @cached_property
     def run(self) -> Run:
         """
-        Returns a Run instance, which runs the live session. It prints the banner, then prints
-        new events as the watchdog records them until the application exits. Events from earlier
-        sessions are not printed. `events` lists them. Lines submitted in the command bar also
-        go through it.
+        Returns a Run instance that runs the live session. It prints the banner, then prints new
+        events as the watchdog records them until the application exits. Events from earlier
+        sessions are not printed. `events` lists them. Lines submitted in the command bar also go
+        through it.
 
         $ trail
         🍃🍄🌲 Welcome back to Trail! 🌲🍄🍃
@@ -79,9 +79,9 @@ class Console(Node):
     @cached_property
     def feed(self) -> Feed:
         """
-        Returns a Feed instance, which prints rows to the terminal above the command bar. Rows
-        include the echoed command, info and error messages, and rendered records. Each row is
-        printed once and never redrawn. Only the last `limit` rows are kept in memory.
+        Returns a Feed instance that prints rows to the terminal above the command bar. A row is an
+        echoed command, an info or error message, or a rendered record. Each row is printed once and
+        never redrawn. Only the last `limit` rows are kept in memory.
 
         > events -2: st_size=0
         events (1 of 14)
@@ -93,10 +93,9 @@ class Console(Node):
     @cached_property
     def renderer(self) -> Renderer:
         """
-        Returns a Renderer instance, which turns events and assets into rows for the feed.
-        Each record is a heading with its position and class name, followed by one line per
-        field. Paths under the project root are shown relative to it. The Renderer also builds
-        the header above the command bar.
+        Returns a Renderer instance that turns events and assets into rows for the feed. A record is
+        a heading with its position and class name, then one line per field. Paths under the project
+        root are shown relative to it. The Renderer also builds the header above the command bar.
 
         4. WatchdogEvent
             id: d1e59e9d9c6041978d9b0cd8b0179abf
@@ -110,9 +109,9 @@ class Console(Node):
     @cached_property
     def commands(self) -> Commands:
         """
-        Returns a Commands instance, which maps each command name and alias to its Command. It
-        is built from every subclass registered in `Command.classes`. A command can be called
-        by any prefix that matches only that command.
+        Returns a Commands instance that maps each command name and alias to its Command. It is
+        built from every subclass in `Command.classes`. Any prefix that matches only one command
+        calls it.
 
         >>> self.commands
         Commands (track, offtrail, mark, unmark, markers, assets, dirs, events, clear, help, ...)
@@ -124,13 +123,13 @@ class Console(Node):
     @cached_property
     def completer(self) -> CommandCompleter:
         """
-        Returns a CommandCompleter, which handles <TAB> completion in the command bar. The
-        first word is completed against the command names. The rest of the line is passed to
-        that command's `complete`. For example, `track` completes filesystem paths, `offtrail`
-        completes tracked paths, `mark` completes paths and extensions, and listings complete
-        field names.
+        Returns a CommandCompleter that handles <TAB> completion in the command bar. The first word
+        is completed against the command names. The rest of the line goes to that command's
+        `complete`. For example, `track` completes filesystem paths, `offtrail` completes tracked
+        paths, `mark` completes paths and extensions, and listings complete field names.
+        # no: should be bullet points for tarck, offtrail, mark, listings
 
-        CommandCompleter is a prompt_toolkit Completer, not a Node, so it stores the console
+        CommandCompleter is a prompt_toolkit Completer, not a Node, so it holds the console
         directly.
 
         e<TAB>             events, exit
@@ -182,8 +181,8 @@ class Console(Node):
 
     def clear(self) -> None:
         """
-        Empty the terminal and its scrollback. Nothing tracked is touched. The feed drops its
-        rows too, so what it holds still matches what is on the screen.
+        Empty the terminal and its scrollback. Nothing tracked is changed. The feed drops its rows
+        too, so it still matches the screen.
         """
         self.feed.clear()
         renderer = self.application.renderer
@@ -198,9 +197,9 @@ class Console(Node):
         """
         Exit the session and mark it for a restart.
 
-        A running session cannot pick up edits to its own source, because its classes were
-        loaded at import. Only a new interpreter can. `main` does the exec after `run` returns,
-        because by then the terminal has been restored and the watchdog has stopped.
+        A running session cannot pick up edits to its own source, since its classes were loaded at
+        import. Only a new interpreter can. `main` does the exec after `run` returns, once the
+        terminal is restored and the watchdog has stopped.
         """
         self.restarting = True
         self.feed.info("restart: reopening on the same command line")
@@ -211,12 +210,12 @@ class Console(Node):
         """
         Flatten a paste onto one line, since the command bar is a single row.
 
-        Text copied from a terminal is often padded with trailing spaces and ends with a
-        newline. In a one-row bar, the padding pushes the text out of view, and a newline moves
-        the cursor to a row that is not drawn. Either way the bar looks empty.
+        Text copied from a terminal often has trailing spaces and a final newline. Trailing spaces
+        push the text out of view. A newline moves the cursor to a row that is not drawn. Either way
+        the bar looks empty.
 
-        Each line is stripped at both ends and the lines are joined with spaces. Spaces inside
-        a line are kept, so paths containing spaces still work.
+        Each line is stripped at both ends, and the lines are joined with spaces. Spaces inside a
+        line are kept, so paths with spaces still work.
         """
         lines = [
             line.strip()
@@ -231,8 +230,8 @@ class Console(Node):
     @cached_property
     def layout(self) -> Layout:
         """
-        Returns the layout, which is the header above the command bar. The feed is printed
-        above these two rows and is not part of the layout.
+        Returns the layout. It holds the header and the command bar. The feed is printed above them
+        and is not part of the layout.
         """
         header = Window(
             FormattedTextControl(self.renderer.header),
@@ -259,9 +258,9 @@ class Console(Node):
     def submit(self, line: str) -> None:
         """
         Run one line from the command bar. The line is echoed to the feed, then passed to the
-        command named by its first word. Events the command recorded are printed right after
-        it. An error raised by the command is printed to the feed instead of propagating, and
-        so is a warning, such as the one `unmark` gives about what stays tracked.
+        command that its first word names. Events the command recorded are printed right after.
+        Errors and warnings from the command are printed to the feed, and errors do not propagate.
+        For example, `unmark` warns about what stays tracked.
 
         > assets
         assets (2 of 2)
@@ -305,7 +304,8 @@ class Run(Node):
     async def __call__(self) -> None:
         """
         Run the application until it exits, printing new events to the feed as they arrive.
-        See `banner` and `stream` for what is printed.
+        See `banner` and `stream` for what is printed. What the watchdog logs as it stops is
+        printed after the application exits.
         """
         trail = self._trail
         application = self._console.application
@@ -315,7 +315,7 @@ class Run(Node):
         # taken before the observer starts, so that nothing recorded between the banner and
         # the first wakeup slips through the gap
         watching = trail.events.watch()
-        async with trail.watchdog.context():
+        async with trail.watchdog.session:
             streaming = asyncio.create_task(
                 self.stream(watching),
                 name="trail-console-stream",
@@ -341,6 +341,8 @@ class Run(Node):
                     with suppress(asyncio.CancelledError):
                         await task
                 await watching.aclose()
+        # stop() logs the accesses still open as the context exits, after the stream has ended
+        self.drain()
 
     def warn(
         self,
@@ -370,7 +372,9 @@ class Run(Node):
         watchdog = self._trail.watchdog
         while True:
             await asyncio.sleep(self.heartbeat)
-            self.diagnose(watchdog.consumer)
+            session = watchdog.session
+            if session:
+                self.diagnose(session.consumer)
 
     def diagnose(self, consumer: asyncio.Task[None] | None) -> None:
         """
@@ -418,10 +422,13 @@ class Run(Node):
 
     def banner(self) -> None:
         """
-        Print the welcome, the Trail id, the project root, the asset, Dir and event counts, any
-        warnings about `.markers`, and a usage hint. Blank lines set the welcome apart and
-        separate the banner from the events printed after it. With `--nodir`, a line after the
-        root says events are held in memory.
+        Print the banner. It prints, in order:
+        - The welcome, then a blank line.
+        - The Trail id and the project root.
+        - With `--nodir`, a line saying events are held in memory.
+        - The asset, Dir and event counts.
+        - Any warnings about `.markers`.
+        - A usage hint, then a blank line before the events.
 
         🍃🍄🌲 Welcome back to Trail! 🌲🍄🍃
 

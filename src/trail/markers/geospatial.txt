@@ -1,4 +1,5 @@
 ./
+*.feather
 *.geojson
 *.gpkg
 *.shp
@@ -16,3 +17,4 @@
 *.fgb
 *.zarr
 *.gdb
+*.safe

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Iterable, Iterator
+from contextlib import suppress
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from functools import cached_property
@@ -10,10 +11,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, Final, Self
 from uuid import uuid4
 
-from trail.asset import Asset
+from trail import fmt
+from trail.asset import Asset, DirAsset
 from trail.collection import Collection
 from trail.node import Node
-from trail.util import asset_repr, mtime_repr, normalize_id, st_size_repr
+from trail.util import OPS, normalize_id
 
 if TYPE_CHECKING:
     from trail.dir import Dir
@@ -26,7 +28,7 @@ EVENT_TYPES: Final = frozenset({"created", "modified", "deleted", "moved", "open
 
 class Get:
     """
-    Allows for shorthand non-raising access.
+    Attribute access that does not raise.
 
     event.src_path -> raises AttributeError
     getattr(event, 'src_path', None) -> returns None, but verbose and string literal
@@ -61,27 +63,20 @@ class Event:
         self.id = normalize_id(self.id)
 
     def _repr_items(self) -> Iterator[tuple[str, object]]:
+        """Yields the fields a repr shows. Every datetime is shown as a clock time."""
         for event_field in fields(self):
             if not event_field.repr:
                 continue
             value = getattr(self, event_field.name)
-            if event_field.name == "timestamp":
-                now = datetime.now(value.tzinfo)
-                date_prefix = ""
-                if value.year != now.year:
-                    date_prefix = value.strftime("%Y-%m-%d ")
-                elif value.month != now.month:
-                    date_prefix = value.strftime("%m-%d ")
-                elif value.day != now.day:
-                    date_prefix = value.strftime("%d ")
-                value = f"{date_prefix}{value:%H:%M:%S}.{value.microsecond // 1000:03d}"
+            if isinstance(value, datetime):
+                value = fmt.clock(value)
             if value is None or value == "":
                 continue
             # the baseline is stored as the stat reported it; the units are put back here
             if event_field.name == "st_size":
-                value = st_size_repr(value)
+                value = fmt.st_size(value)
             elif event_field.name == "st_mtime":
-                value = mtime_repr(value)
+                value = fmt.mtime(value)
             yield event_field.name, value
 
     @property
@@ -146,16 +141,19 @@ class Event:
 
     def to_record(self) -> dict:
         """
-        Returns the event as one record of the log. The entry is held by its id, and the
-        timestamp in ISO format.
+        Returns the event as one record of the log. The entry is held by its id, and every
+        datetime in ISO format.
         """
-        out = {
-            field.name: getattr(self, field.name)
-            for field in fields(self)
-            if field.name != "entry"
-        }
+        out = {}
+        for event_field in fields(self):
+            name = event_field.name
+            if name == "entry":
+                continue
+            value = getattr(self, name)
+            if isinstance(value, datetime):
+                value = value.isoformat()
+            out[name] = value
         out["cls"] = type(self).__name__
-        out["timestamp"] = self.timestamp.isoformat()
         out["entry"] = self.entry.id
         return out
 
@@ -163,10 +161,9 @@ class Event:
 @dataclass(kw_only=True, slots=True, repr=False)
 class AddAssetEvent(Event):
     """
-    A resource being tracked. The recorded size and mtime are the baseline the filesystem is
-    later compared against, so they are sampled once here and never refreshed on replay.
-    `rule` is the line of `.markers` that picked the resource up, or None if it was tracked
-    explicitly.
+    A resource being tracked. The size and mtime recorded here are the baseline for later comparison
+    with the filesystem. They are sampled once and not refreshed on replay. `rule` is the line of
+    `.markers` that picked the resource up, or None if it was tracked explicitly.
 
     >>> trail: Trail
     >>> trail.events.select[2:3]
@@ -215,8 +212,8 @@ class AddAssetEvent(Event):
     def _stat(self, asset: Asset) -> None:
         """
         Record the size and mtime of the asset. A directory asset records the totals of its
-        fingerprint. A resource that vanished before it was tracked records neither, rather
-        than failing to track.
+        fingerprint. A resource that vanished before it was tracked records neither, and tracking
+        does not fail.
         """
         try:
             _, size, mtime = asset.fingerprint
@@ -397,7 +394,7 @@ class WatchdogEvent(Event):
                 continue
             if (
                 path in trail._offtrailed_paths
-                or trail._ignored(path)
+                or trail._is_ignored(path)
             ):
                 return None
         entry = self._find(trail, source, destination)
@@ -423,9 +420,9 @@ class WatchdogEvent(Event):
         destination: Path | None,
     ) -> Entry | None:
         """
-        Returns the entry the event is about: the asset at its source or destination, or for a
-        directory event the Dir there. An entry of the other kind, a file where the event is
-        about a directory, is passed over.
+        Returns the entry the event is about. That is the asset at its source or destination, or the
+        Dir there for a directory event. An entry of the wrong kind, such as a file for a directory
+        event, is skipped.
         """
         collections = [trail.assets]
         if self.is_directory:
@@ -444,6 +441,65 @@ class WatchdogEvent(Event):
 
 
 @dataclass(kw_only=True, slots=True, repr=False)
+class DirectoryAccessEvent(WatchdogEvent):
+    """
+    One access to a dirasset. It covers what happened inside the dirasset from `started` to its last
+    event, which is its `timestamp`. It is inferred from many filesystem events, so it is always
+    synthetic. `count` holds the events of each type that were counted for the dirasset's children.
+    It counts the events the watchdog delivered, not the files read or written. `event_type` is
+    `opened` if only opens were counted, and `modified` otherwise.
+
+    >>> trail: Trail
+    >>> trail.events.select[-1:]
+    Events (1)
+        0. DirectoryAccessEvent
+            id: 213069170ab24755b733578c438c0a93
+            timestamp: 21:24:58.104
+            src_path: /tmp/tmp69jvvrsu/cube.zarr
+            event_type: modified
+            started: 21:24:57.862
+            count: opened 1, modified 72
+    """
+
+    started: datetime
+    is_directory: bool = field(default=True, init=False, repr=False)
+    is_synthetic: bool = field(default=True, init=False, repr=False)
+    count: dict[str, int] = field(default_factory=dict)
+    entry: DirAsset | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        WatchdogEvent.__post_init__(self)
+        # a replay passes the start as the log holds it
+        if isinstance(self.started, str):
+            self.started = datetime.fromisoformat(self.started)
+
+    def _repr_items(self) -> Iterator[tuple[str, object]]:
+        """Yields the fields a repr shows, with the counts on one line and zeros left out."""
+        for name, value in WatchdogEvent._repr_items(self):
+            if name == "count":
+                value = ", ".join(
+                    f"{op} {value[op]}"
+                    for op in OPS
+                    if value.get(op)
+                )
+            yield name, value
+
+    def apply(
+        self,
+        trail: Trail,
+        *,
+        replay: bool = False,
+    ) -> DirAsset | None:
+        """
+        Log the access and return its dirasset. An access changes nothing about the dirasset, so a
+        replay only returns it.
+        """
+        if not replay:
+            trail.events.append(self)
+        return self.entry
+
+
+@dataclass(kw_only=True, slots=True, repr=False)
 class JupyterEvent(Event):
     def apply(
         self,
@@ -459,7 +515,7 @@ class JSONL(Node):
     _parent: Events
 
     def __repr__(self) -> str:
-        return asset_repr(type(self).__name__, self.path)
+        return fmt.asset(type(self).__name__, self.path)
 
     @property
     def path(self) -> Path | None:
@@ -494,7 +550,7 @@ class JSONL(Node):
                 if entry is None:
                     entry = trail._entry(entry_id)
                     if entry is None:
-                        entry = self._made(record, entry_id)
+                        entry = self.record2entry(record, entry_id)
                     entries[entry_id] = entry
                 event = Event.from_record(trail=trail, resolved_entry=entry, **record)
                 if event.id in loaded:
@@ -506,14 +562,17 @@ class JSONL(Node):
         self._parent.data.update(loaded)
         self._parent.ids[:] = loaded
 
-    def _made(
+    def record2entry(
         self,
         record: dict,
         identifier: str,
     ) -> Entry:
         """
         Returns a new entry for the first record about an id. That record is always the event
-        that added it, so an AddDirEvent makes a Dir and any other record an Asset.
+        that added the entry.
+        - An AddDirEvent makes a Dir.
+        - A record about a directory makes a DirAsset.
+        - Any other record makes an Asset.
         """
         from trail.dir import Dir
 
@@ -522,13 +581,12 @@ class JSONL(Node):
         if record["cls"] == AddDirEvent.__name__:
             entry = Dir(path=path, id=identifier)
             entry._parent = trail.dirs
+            return entry
+        if record.get("is_directory", False):
+            entry = DirAsset(path=path, id=identifier)
         else:
-            entry = Asset(
-                path=path,
-                id=identifier,
-                is_directory=record.get("is_directory", False),
-            )
-            entry._parent = trail.assets
+            entry = Asset(path=path, id=identifier)
+        entry._parent = trail.assets
         return entry
 
     def write(self) -> None:
@@ -563,33 +621,49 @@ class JSONL(Node):
 
 class Watch(Node):
     """
-    Suspends a consumer until the Trail records something, rather than leaving it to poll the
-    collection. Each iteration holds its own waiter and its own cursor into the log, so several
-    consumers may watch at once without consuming one another's events.
+    Suspends a consumer until the Trail records something, so it does not poll the collection. Each
+    iteration has its own waiter and its own cursor into the log. Several consumers can watch at
+    once without consuming each other's events.
     """
 
     _parent: Events
 
     @cached_property
-    def waiters(self) -> set[asyncio.Event]:
-        """The flag held by each live iteration, raised when the log is appended to."""
-        return set()
+    def waiters(self) -> dict[asyncio.Event, asyncio.AbstractEventLoop]:
+        """
+        The flag of each live iteration, mapped to the loop the iteration runs on. The flag is
+        raised when the log is appended to.
+        """
+        return {}
 
     def notify(self) -> None:
-        """Wake every iteration so it may drain whatever was just appended."""
-        for waiter in self.waiters:
-            waiter.set()
+        """
+        Wake every iteration to drain what was just appended. Each flag is set on its own loop,
+        directly from that loop or through `call_soon_threadsafe` from any other thread. A closed
+        loop is skipped. Nothing raises.
+        """
+        try:
+            current = asyncio.get_running_loop()
+        except RuntimeError:
+            current = None
+        for waiter, loop in tuple(self.waiters.items()):
+            if loop is current:
+                waiter.set()
+            elif not loop.is_closed():
+                # the loop may close between the check and the call
+                with suppress(RuntimeError):
+                    loop.call_soon_threadsafe(waiter.set)
 
     def __call__(
         self,
         timeout: float | None = None,
     ) -> AsyncIterator[Event]:
         """
-        Yield each event appended after this call, suspending until the next one arrives rather
-        than polling the collection. The cursor is taken here rather than when iteration begins,
-        so a watcher made before the action which triggers the event cannot miss it, however long
-        the loop takes to reach the `async for`. Iteration ends once `timeout` seconds have
-        elapsed, so a `for ... else` distinguishes the awaited event from the deadline.
+        Yield each event appended after this call. It suspends until the next event arrives and does
+        not poll. The cursor is taken here, not when iteration begins. A watcher made before the
+        action that triggers the event cannot miss it, however long the loop takes to reach the
+        `async for`. Iteration ends after `timeout` seconds, so a `for ... else` can tell the
+        awaited event from the deadline.
 
             watching = trail.events.watch(timeout=5)
             asset.open()
@@ -599,13 +673,24 @@ class Watch(Node):
             else:
                 raise TimeoutError
         """
-        return self._iterate(len(self._parent.ids), timeout)
+        return self.iterate(len(self._parent.ids), timeout)
 
-    async def _iterate(
+    async def iterate(
         self,
         position: int,
         timeout: float | None,
     ) -> AsyncIterator[Event]:
+        """
+        Yield each event from `position` in the log onward, then suspend until `notify` sets this
+        iteration's waiter.
+        - The waiter is held in `waiters` while the iteration runs, and removed when it ends.
+        - The waiter is cleared before the backlog is drained. An event appended during a yield
+          sets it again, so the event is not missed.
+        - A position past the end of the log is moved back to the end. This happens if events
+          were removed while watching.
+        - Iteration ends `timeout` seconds after it starts. It never ends on its own if `timeout`
+          is None.
+        """
         events = self._parent
         loop = asyncio.get_running_loop()
         if timeout is None:
@@ -613,7 +698,7 @@ class Watch(Node):
         else:
             deadline = loop.time() + timeout
         waiter = asyncio.Event()
-        self.waiters.add(waiter)
+        self.waiters[waiter] = loop
         try:
             while True:
                 # cleared before the backlog is drained, so an arrival during a yield is not lost
@@ -635,9 +720,17 @@ class Watch(Node):
                 except TimeoutError:
                     return
         finally:
-            self.waiters.discard(waiter)
+            self.waiters.pop(waiter, None)
 
     def __repr__(self) -> str:
+        """
+        Shows how many iterations are waiting on the log.
+
+        >>> trail: Trail
+        >>> trail.events.watch
+        Watch
+            waiters: 1
+        """
         lines = [
             type(self).__name__,
             f"    waiters: {len(self.waiters)!r}",
@@ -665,6 +758,15 @@ class Events(Collection[str, Event]):
             st_size: 17 B
             st_mtime: 2026-10-06 19:48:26
     """
+
+    @property
+    def types(self) -> list[type[Event]]:
+        """
+        Returns every registered event class. The `events` listing in the console offers their
+        fields as `field=` completions. `Event.classes` is read, not `__subclasses__`, since a
+        slots dataclass leaves its class from before the slots behind as a second subclass.
+        """
+        return list(Event.classes.values())
 
     @cached_property
     def jsonl(self) -> JSONL:
@@ -723,11 +825,17 @@ class Events(Collection[str, Event]):
 
     def clear(self) -> None:
         """
-        Empty the log. A Dir stays live while `.markers` names it, so each live Dir is logged
-        again with its ID. A selection out of the log only empties itself.
+        Empty the log. Accesses still open are dropped, not logged. Each Dir named in `.markers` is
+        logged again with its ID. Calling this on a selection only empties the selection.
         """
+        trail = self._trail
+        session = trail.watchdog.session
+        if (
+            self is trail.events
+            and session
+        ):
+            session.accesses.drop()
         super().clear()
         self.jsonl.write()
-        trail = self._trail
         if self is trail.events:
             trail.dirs.relog()

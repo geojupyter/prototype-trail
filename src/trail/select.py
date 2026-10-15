@@ -41,8 +41,8 @@ class Selectable[V](Protocol):
 
 class Select[T: Selectable[Any], V](Node):
     """
-    Picks records out of the collection it hangs off and returns them as a copy of that
-    collection: the same parent, but a data dict holding only what was picked.
+    Picks records out of the collection it hangs off. Returns a copy of that collection with the
+    same parent and only the picked records.
 
         events.select('src_path=/path/to/file.csv')
         events.select('id=8a43da699bf242e7976e7bb74df81d0f or id=c2152a8b8f31416abbfe7106fce8cb6c')
@@ -50,18 +50,18 @@ class Select[T: Selectable[Any], V](Node):
         events.select('(src_path=/path/to/a.csv or src_path=/path/to/b.csv) -5:')
         events.select('cls=WatchdogEvent event_type=opened')
 
-    Every term names its field, and the value is read as whatever type the record holds there;
-    a record held by reference, such as an event's asset, compares by its id. `cls` is the
-    record's class, and `cls=Event` holds for its subclasses too, as isinstance would. `not`
-    binds tightest, then `and`, then `or`, and terms written side by side are joined by `and`.
+    Every term names its field. The value is read as the type the record holds in that field. A
+    record held by reference, such as an event's asset, compares by its id. `cls` is the record's
+    class, and `cls=Event` also holds for subclasses, as `isinstance` does. `not` binds tightest,
+    then `and`, then `or`. Terms written side by side are joined by `and`.
 
     A slice is a term like any other. Under `and`, each term selects from what the one before it
-    left, so the order they are written in matters:
+    left, so the order matters:
 
         events.select('src_path=/path/to/a.csv -5:')    the last five of that file's records
         events.select('-5: src_path=/path/to/a.csv')    those of the last five that are that file's
 
-    Indexed by position, it gives the record there, or a copy holding a slice of them.
+    Indexed by position, it returns the record there, or a copy holding a slice of the records.
 
         events.select[0]                                the first record
         events.select[-5:]                              a copy holding the last five
@@ -170,13 +170,16 @@ class Select[T: Selectable[Any], V](Node):
         return self.where(match['field'], match['operator'], moment)
 
     def union(self, *selections: T) -> T:
+        pooled = {
+            key
+            for selection in selections
+            for key in selection.data
+        }
+        # in the parent's order, not the order the selections hold them in
         keys = [
             key
             for key in self._parent.data
-            if any(
-                key in selection.data
-                for selection in selections
-            )
+            if key in pooled
         ]
         return self.subset(keys)
 

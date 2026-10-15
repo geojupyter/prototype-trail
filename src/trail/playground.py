@@ -11,13 +11,14 @@ from itertools import chain, count
 from pathlib import Path
 from typing import Self
 
-# NOTE: AI Generated
+from trail import fmt
+from trail.asset import DirAsset
+
 
 class Node:
     """
-
-    A member of a playground tree. A node holds only its parent and its own filename, so the path
-    falls out of the chain and an ancestor which moves repaths everything beneath it.
+    A member of a playground tree. A node holds only its parent and its own filename. The path comes
+    from the chain of parents, so a moved ancestor repaths everything beneath it.
     """
 
     suffix: str = ''
@@ -60,13 +61,13 @@ class Node:
 
     @cached_property
     def _adhoc(self) -> list[Node]:
-        """members addressed by filename rather than declared as attributes"""
+        """members addressed by filename, not declared as attributes"""
         return []
 
     def children(self) -> Iterator[Node]:
         """
-        The members which have been reached for; the rest derive their path from this node when
-        they are first accessed, so only these can be left holding a stale one.
+        The members that have been reached for. The rest derive their path from this node when first
+        accessed. Only these members can hold a stale path.
         """
         adhoc = self._adhoc
         values = chain(tuple(self.__dict__.values()), adhoc)
@@ -85,9 +86,9 @@ class Node:
 
     def move(self, destination: str | Path | Node | None = None) -> Self:
         """
-        Rename the resource and follow it, so this node and the members beneath it keep pointing
-        at the moved tree. Without a destination the node takes its next numbered sibling name;
-        a directory destination keeps the current filename.
+        Rename the resource and follow it, so this node and the members beneath it point at the
+        moved tree. Without a destination, the node takes its next numbered sibling name. A
+        directory destination keeps the current filename.
         """
         self.create()
         previous = self.path
@@ -128,7 +129,7 @@ class Node:
         previous: Path,
         current: Path,
     ) -> None:
-        """follow an ancestor which moved, preserving whatever rename this node has"""
+        """follow an ancestor that moved, keeping any rename this node has"""
         if not self.path.is_relative_to(previous):
             return
         self.path = current / self.path.relative_to(previous)
@@ -169,13 +170,13 @@ class Asset(Node):
         self.path.write_text(content, encoding='utf-8')
         return self
 
-    def open(self) -> Self:
+    def open(self) -> str:
         """
-        Read the asset, which is what produces an `opened` event, and return its text. A missing
-        asset is created first so a test can go straight to the event it wants.
+        Read the asset and return its text. Reading produces an `opened` event. A missing asset is
+        created first, so a test can go straight to the event it wants.
         """
         self.create()
-        self.path.read_text(encoding='utf-8')
+        return self.path.read_text(encoding='utf-8')
 
     def append(self, *lines: str) -> Self:
         """Append lines, defaulting to one generated line."""
@@ -204,7 +205,7 @@ class CSV(Asset):
         return f'row{number},{number}'
 
     def append(self, *rows: str | Iterable[object]) -> Self:
-        """Append rows, defaulting to one generated row; a non-string row joins on commas."""
+        """Append rows, defaulting to one generated row. A non-string row joins on commas."""
         self.create()
         if not rows:
             rows = (self.row(),)
@@ -234,24 +235,26 @@ class GeoJSON(Asset):
     def feature(self, **properties) -> dict:
         """a point feature whose coordinates and name count up with each call"""
         number = next(self._numbers)
+        geometry = {
+            'type': 'Point',
+            'coordinates': [float(number), float(number)],
+        }
+        named = {'name': f'point{number}'}
         out = {
             'type': 'Feature',
-            'geometry': {
-                'type': 'Point',
-                'coordinates': [float(number), float(number)],
-            },
-            'properties': {'name': f'point{number}'} | properties,
+            'geometry': geometry,
+            'properties': named | properties,
         }
         return out
 
     def features(self) -> list[dict]:
-        """the features on disk; reading them produces an `opened` event"""
+        """The features on disk. Reading them produces an `opened` event."""
         return json.loads(self.open())['features']
 
     def append(self, *features: dict) -> Self:
         """
-        Rewrite the collection with `features` added, defaulting to one generated point.
-        A GeoJSON append is a read-modify-write, so the asset is opened before it is modified.
+        Rewrite the collection with `features` added, defaulting to one generated point. Appending
+        reads and then writes the file, so the asset is opened before it is modified.
         """
         collection = self.features()
         if not features:
@@ -266,6 +269,91 @@ class GeoJSON(Asset):
             'features': features,
         }
         return f'{json.dumps(collection, indent=2)}\n'
+
+
+class Store(Node):
+    """
+    A dirasset in the playground tree: a directory written as one dataset. `files` are the paths
+    inside it, relative to it, that `create` writes.
+    """
+
+    files: tuple[str, ...] = ()
+
+    def create(self) -> Self:
+        """Write every file of the store unless the store is already there."""
+        if self.exists:
+            return self
+        return self.write()
+
+    def read(self, *names: str) -> Self:
+        """
+        Read files inside the store, all of them by default. Reading produces `opened` events. A
+        missing store is created first.
+        """
+        self.create()
+        for name in names or self.files:
+            (self.path / name).read_bytes()
+        return self
+
+    def write(self, *names: str) -> Self:
+        """
+        Write files inside the store, all of them by default. Writing produces `created` and
+        `modified` events.
+        """
+        for name in names or self.files:
+            path = self.path / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f'{name}\n'.encode())
+        return self
+
+    def rewrite(self) -> Self:
+        """Remove the store and write it again, as `to_zarr(mode='w')` does."""
+        self.remove()
+        return self.write()
+
+    def remove(self) -> Self:
+        shutil.rmtree(self.path, ignore_errors=True)
+        return self
+
+
+class ZarrV3(Store):
+    """A zarr v3 store with one array of one chunk."""
+
+    suffix = '.zarr'
+    files = ('zarr.json', 'arr/zarr.json', 'arr/c/0/0')
+
+
+class ZarrV2(Store):
+    """A zarr v2 store with consolidated metadata and one array of one chunk."""
+
+    suffix = '.zarr'
+    files = ('.zgroup', '.zmetadata', 'arr/.zarray', 'arr/0.0')
+
+
+class GDB(Store):
+    """A flat file geodatabase with its system tables and one layer."""
+
+    suffix = '.gdb'
+    files = (
+        'gdb',
+        'timestamps',
+        'a00000001.gdbtable',
+        'a00000001.gdbtablx',
+        'a00000009.gdbtable',
+        'a00000009.gdbtablx',
+    )
+
+
+class SAFE(Store):
+    """A Sentinel-2 product with its manifest and two bands of one granule."""
+
+    suffix = '.SAFE'
+    files = (
+        'manifest.safe',
+        'MTD_MSIL2A.xml',
+        'GRANULE/L2A_T33UUP/IMG_DATA/R10m/T33UUP_B04_10m.jp2',
+        'GRANULE/L2A_T33UUP/IMG_DATA/R10m/T33UUP_B08_10m.jp2',
+    )
 
 
 class Dir(Node):
@@ -283,6 +371,22 @@ class Dir(Node):
     def dir(self) -> Dir:
         return Dir(self, 'dir')
 
+    @cached_property
+    def zarr(self) -> ZarrV3:
+        return ZarrV3(self, 'zarr')
+
+    @cached_property
+    def zarr2(self) -> ZarrV2:
+        return ZarrV2(self, 'zarr2')
+
+    @cached_property
+    def gdb(self) -> GDB:
+        return GDB(self, 'gdb')
+
+    @cached_property
+    def safe(self) -> SAFE:
+        return SAFE(self, 'safe')
+
     def asset(self, filename: str) -> Asset:
         return self._child(filename, self._asset_type(filename))
 
@@ -295,9 +399,8 @@ class Dir(Node):
         node_type: type[N],
     ) -> N:
         """
-        An ad-hoc member addressed by filename rather than declared as an attribute. Whichever
-        member already points at that path wins, so a declared `csv` and an `asset('csv.csv')`
-        are the same node.
+        An ad-hoc member addressed by filename, not declared as an attribute. A member that already
+        points at that path wins, so a declared `csv` and an `asset('csv.csv')` are the same node.
         """
         path = self.path / filename
         for child in self.children():
@@ -330,15 +433,13 @@ class Dir(Node):
 
 class Playground(Dir):
     """
-    AI Generated
+    A disposable filesystem tree for exercising a Trail. A test does not need to create its own
+    temporary directories, files, appends and renames. The playground is the root directory, so it
+    has the same members as any directory beneath it.
 
-    A disposable filesystem tree for exercising a Trail without hand-rolling temporary
-    directories, files, appends and renames in every test. The playground is the root directory,
-    so it carries the same members as any directory beneath it.
-
-    Members are lazy: a node is only a name and a parent until something is created, opened,
-    appended, moved or removed, so a test names the resource it wants and then triggers only the
-    events it cares about.
+    Members are lazy. A node is only a name and a parent until something is created, opened,
+    appended, moved or removed. A test names the resource it wants, then triggers only the events it
+    needs.
 
         playground = Playground()
         trail = Trail(playground.path)
@@ -348,10 +449,10 @@ class Playground(Dir):
         playground.dir.geojson.append()
         playground.dir.move()
 
-    `playground.csv` is `<root>/csv.csv`, `playground.dir.geojson` is `<root>/dir/geojson.geojson`,
-    and `dir` nests without limit. Nodes are os.PathLike, so one can be handed to anything which
-    takes a path. A playground which made its own directory sweeps it up when it is collected or
-    when the process exits; one given a directory leaves it alone until it is asked to remove it.
+    `playground.csv` is `<root>/csv.csv`. `playground.dir.geojson` is `<root>/dir/geojson.geojson`.
+    `dir` nests without limit. Nodes are os.PathLike, so one can be passed to anything that takes a
+    path. A playground that made its own directory removes it when it is collected or when the
+    process exits. A playground given a directory leaves it alone until asked to remove it.
 
     >>> playground: Playground
     >>> playground
@@ -406,26 +507,46 @@ class Playground(Dir):
         return repr(self)
 
     def _tree(self) -> list[str]:
-        """the tree as it is on disk, which is not the same as the members which exist as nodes"""
+        """
+        The tree as it is on disk, which can differ from the members that exist as nodes. A dirasset
+        is one line with its file count, as a Trail tracks it.
+        """
         if not self.exists:
             return ['    tree: <missing>']
-        paths = sorted(self.path.rglob('*'))
-        if not paths:
+        entries = []
+        for directory, dirnames, filenames in os.walk(self.path):
+            parent = Path(directory)
+            walked = []
+            for name in dirnames:
+                path = parent / name
+                relative = path.relative_to(self.path)
+                if DirAsset.is_match(path):
+                    count = sum(
+                        len(files)
+                        for _, _, files in os.walk(path)
+                    )
+                    entries.append((path, f'{relative}/ ({fmt.plural(count, "file")})'))
+                else:
+                    entries.append((path, f'{relative}/'))
+                    walked.append(name)
+            dirnames[:] = walked
+            for name in filenames:
+                path = parent / name
+                entries.append((path, str(path.relative_to(self.path))))
+        if not entries:
             return ['    tree: []']
+        entries.sort()
         lines = ['    tree: [']
-        for path in paths[:self.repr_limit]:
-            relative = str(path.relative_to(self.path))
-            if path.is_dir():
-                relative = f'{relative}/'
+        for _, relative in entries[:self.repr_limit]:
             lines.append(f'        {relative!r},')
-        hidden = len(paths) - self.repr_limit
+        hidden = len(entries) - self.repr_limit
         if hidden > 0:
             lines.append(f'        <{hidden} others>')
         lines.append('    ]')
         return lines
 
     def _arm(self) -> None:
-        """aim the sweep at the current path, so a playground which moves still cleans up"""
+        """aim the sweep at the current path, so a playground that moves still cleans up"""
         if self._finalizer is not None:
             self._finalizer.detach()
         if self._cleanup:

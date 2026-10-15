@@ -11,6 +11,7 @@ from prompt_toolkit.completion import CompleteEvent, Completer, Completion
 from prompt_toolkit.document import Document
 
 from trail.cli.node import Node
+from trail.collection import attributes
 from trail.markers import MAGIC
 from trail.select import SLICE, Select, Selectable
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
     from trail.asset import Asset, Assets
     from trail.cli.commands import Commands
     from trail.cli.console import Console
+    from trail.dir import Dirs
     from trail.event import Events
 
 # what confirms an action that discards the record rather than adding to it
@@ -28,9 +30,8 @@ CLEAR = "clear"
 
 class Command(Node):
     """
-    A command in the command bar. Each subclass with a `name` registers itself in `classes`,
-    so adding a command only takes writing the class. Dispatch, `help` and completion all read
-    from `classes`.
+    A command in the command bar. Each subclass with a `name` registers itself in `classes`, so a
+    new command needs only its class. Dispatch, `help` and completion read from `classes`.
     """
 
     _parent: Commands
@@ -94,7 +95,7 @@ class Command(Node):
     def asset(self, token: str) -> Asset | None:
         """
         Returns the tracked asset an argument names, by id or by path. A leading `#` forces the
-        token to be read as an id, in case a file name would match first.
+        argument to be read as an id, even if a file has that name.
         """
         assets = self._trail.assets
         if token.startswith("#"):
@@ -102,7 +103,9 @@ class Command(Node):
         found = assets.get(token)
         if found is not None:
             return found
-        return assets.get(self.absolute(Path(token).expanduser()))
+        expanded = Path(token).expanduser()
+        path = self.absolute(expanded)
+        return assets.get(path)
 
     def paths(
         self,
@@ -110,9 +113,9 @@ class Command(Node):
         tracked: bool = False,
     ) -> list[Path]:
         """
-        Resolve a command's arguments against the project root. A token with glob characters
-        is matched against the filesystem, or against the tracked paths when `tracked` is True.
-        Matching tracked paths lets a glob name files that were already deleted.
+        Resolve a command's arguments against the project root. A token with glob characters is
+        matched against the filesystem. If `tracked` is True, it is matched against the tracked
+        paths, so a glob can name deleted files.
         """
         selected: dict[Path, None] = {}
         for token in arguments:
@@ -220,10 +223,9 @@ class Query[T: Selectable[Any], V](Select[T, V]):
 
 class Listing(Command):
     """
-    A command that lists one of the Trail's collections. Records are printed the same way the
-    feed prints events. A subclass defines `collection` and `fields`. The text after the
-    command name is parsed by `Query`, so a listing accepts the same expressions as
-    `events.select(...)`:
+    A command that lists one of the Trail's collections. Records are printed the same way the feed
+    prints events. A subclass defines `collection`. `Query` parses the text after the
+    command name, so a listing accepts the same expressions as `events.select(...)`:
 
         events                                    the last `default` records
         events :5    -5:    2:7                   a slice, counted the way Python counts
@@ -231,19 +233,22 @@ class Listing(Command):
         events src_path=a.csv or src_path=b.csv   either file's records
         events cls=WatchdogEvent not event_type=opened
 
-    Paths are read against the project root, so a path copied from a printed record can be
-    pasted back. Without a slice, only the last `default` matches are shown.
+    Paths are read against the project root. Without a slice, only the last `default` matches are
+    shown.
     """
 
-    # the fields offered as completions; a record can be selected on any other it holds
-    fields: ClassVar[tuple[str, ...]] = ()
     # records shown when the expression does not say how many
     default = 20
 
     @property
-    def collection(self) -> Assets | Events:
+    def collection(self) -> Assets | Dirs | Events:
         """Returns the collection this command lists."""
         raise NotImplementedError
+
+    @property
+    def fields(self) -> tuple[str, ...]:
+        """Returns the fields offered as completions, read from the collection's record classes."""
+        return attributes(self.collection.types)
 
     def complete(
         self,

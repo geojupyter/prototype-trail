@@ -18,8 +18,8 @@ from trail.trail import Trail
 
 class TestListing:
     """
-    The commands that select out of a collection. The feed prints its rows to the terminal;
-    the printing is swallowed and the rows are read back off the feed instead.
+    The commands that select from a collection. The feed prints its rows to the terminal. The
+    printing is discarded and the rows are read back from the feed.
     """
 
     @staticmethod
@@ -126,6 +126,27 @@ class TestListing:
             assert "AddDirEvent" in written
             assert "rule: data/*.csv" in written
 
+    def test_a_listing_completes_the_fields_its_records_hold(self) -> None:
+        with self.session() as console:
+
+            def offered(text: str) -> set[str]:
+                completions = console.completer.get_completions(
+                    Document(text),
+                    CompleteEvent(completion_requested=True),
+                )
+                return {
+                    completion.text
+                    for completion in completions
+                }
+
+            # a property an asset names in `selectable`
+            assert offered("assets st_") == {"st_size=", "st_mtime="}
+            assert "is_directory=" in offered("assets is_")
+            assert offered("dirs sc") == {"scopes="}
+            # a field only one event class defines
+            assert offered("events is_s") == {"is_synthetic="}
+            assert offered("events (cl") == {"cls="}
+
     def test_or_takes_either_side(self) -> None:
         with self.session() as console:
             assert self.positions(self.run(console, "assets path=a.csv or path=b.csv")) == [0, 1]
@@ -192,7 +213,7 @@ class TestListing:
             assert "nothing matched" in self.run(console, "events event_type=created")
 
     def test_the_key_empties_the_rows_but_not_the_tracking(self) -> None:
-        """Emptying the terminal is ctrl-l's, now that `clear` discards the record instead."""
+        """Ctrl-L empties the terminal. `clear` discards the record instead."""
         with self.session() as console:
             tracked = len(console._trail.assets)
             assert console.feed.rows
@@ -306,7 +327,7 @@ class TestMarking:
             assert rows[2] == ["folder/*.png", "dir", "scope", "·", "not", "subfolders", "folder/"]
             (console.root / "data").mkdir()
             (console.root / ".markers").write_text("./\ndata\n", encoding="utf-8")
-            console._trail.markers.text.read()
+            console._trail.markers.txt.read()
             assert "did you mean 'data/'" in self.run(console, "markers")
 
     def test_offtrail_globs_match_the_way_markers_do(self) -> None:
@@ -383,6 +404,10 @@ if __name__ == "__main__":
         (
             "test_assets_and_dirs_list_their_own_collections",
             "assets and dirs list their own collections",
+        ),
+        (
+            "test_a_listing_completes_the_fields_its_records_hold",
+            "a listing completes the fields its records hold",
         ),
         (
             "test_or_takes_either_side",

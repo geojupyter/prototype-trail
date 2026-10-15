@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from functools import cached_property
-from typing import TYPE_CHECKING, ClassVar, Final
+from textwrap import dedent
+from typing import TYPE_CHECKING, Final
 
 from prompt_toolkit.completion import CompleteEvent, Completer, Completion, PathCompleter
 from prompt_toolkit.document import Document
@@ -28,23 +29,27 @@ KEYS: Final[tuple[tuple[str, str], ...]] = (
 )
 
 # printed by `help` after the key bindings, one row per line
-NOTES: Final[tuple[str, ...]] = (
-    "'track data/*.csv' tracks the csv files in data now, while 'mark data/*.csv' adds the",
-    "line to .markers, so the csv files written there later are tracked as well",
-    "tracking a directory tracks it whole, as one asset; 'mark data/' watches it instead,",
-    "so the files in it that the extensions in .markers name are tracked one by one",
-    "'unmark' only edits .markers: what a line already tracked stays tracked until offtrailed",
-    "the feed is ordinary output, so scrolling, selecting and copying are the",
-    "terminal's own and work as they do anywhere else",
-    "a listing reads what follows it as a selection: every term names its field, terms",
-    "side by side all have to hold, 'or' takes either side, and a slice cuts what the terms",
-    "before it left, so 'events (src_path=a.csv or src_path=b.csv) -5:' is the last five",
-    "records of either file",
-    "every listing takes 'clear': 'assets clear -f' offtrails what it lists and",
-    "records the removals, while 'events clear -f' discards the log those were kept in",
-    "'clear -f' on its own does both, and ctrl-l empties the terminal instead",
-    "'restart' reopens the project in a new process, which is how an edit to the",
-    "console's own source takes effect without losing what was recorded",
+NOTES: Final = dedent(
+    """\
+    'track data/*.csv' tracks the csv files in data now, while 'mark data/*.csv' adds the
+    line to .markers, so the csv files written there later are tracked as well
+    tracking a directory tracks it whole, as one asset; 'mark data/' watches it instead,
+    so the files in it that the extensions in .markers name are tracked one by one
+    a dirasset such as a .zarr store is marked without its '/', so 'mark data/cube.zarr'
+    tracks it whole, and the reads and writes inside it are logged as one access
+    'unmark' only edits .markers: what a line already tracked stays tracked until offtrailed
+    the feed is ordinary output, so scrolling, selecting and copying are the
+    terminal's own and work as they do anywhere else
+    a listing reads what follows it as a selection: every term names its field, terms
+    side by side all have to hold, 'or' takes either side, and a slice cuts what the terms
+    before it left, so 'events (src_path=a.csv or src_path=b.csv) -5:' is the last five
+    records of either file
+    every listing takes 'clear': 'assets clear -f' offtrails what it lists and
+    records the removals, while 'events clear -f' discards the log those were kept in
+    'clear -f' on its own does both, and ctrl-l empties the terminal instead
+    'restart' reopens the project in a new process, which is how an edit to the
+    console's own source takes effect without losing what was recorded
+    """
 )
 
 # the narrowest `help` will make its usage column, whatever it is listing
@@ -53,9 +58,9 @@ HELP_WIDTH: Final = 20
 
 class TrackCommand(Command):
     """
-    Track each path given, now. Globs are expanded against the filesystem from the project
-    root. Paths that are already tracked are reported and skipped. A directory is tracked
-    whole, as one asset. `mark` is the command for files that do not exist yet.
+    Track each path now. Globs are expanded against the filesystem from the project root. Paths
+    already tracked are reported and skipped. A directory is tracked whole, as one asset. Use `mark`
+    for files that do not exist yet.
     """
 
     name = "track"
@@ -103,9 +108,9 @@ class TrackCommand(Command):
 
 class OfftrailCommand(Command):
     """
-    Offtrail each path given. Globs are matched against the tracked paths, not the filesystem,
-    so files that were already deleted can still be offtrailed. `.markers` is not edited, so a
-    file a line marks stays offtrailed rather than being picked up again.
+    Offtrail each path given. Globs are matched against tracked paths, not the filesystem, so
+    deleted files can still be offtrailed. `.markers` is not edited. A file that a line marks stays
+    offtrailed.
     """
 
     name = "offtrail"
@@ -118,7 +123,8 @@ class OfftrailCommand(Command):
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
         """Completes only tracked paths, since only those can be offtrailed."""
-        yield from self.offer(self.word(document))
+        word = self.word(document)
+        yield from self.offer(word)
 
     def __call__(self, arguments: Sequence[str]) -> None:
         """Offtrail each tracked path the arguments name, and report the ones not tracked."""
@@ -135,9 +141,9 @@ class OfftrailCommand(Command):
 
 class MarkCommand(Command):
     """
-    Add a line to `.markers` for each pattern, then track the files it matches now. Files that
-    match it later are tracked when they appear. `csv` and `.csv` add `*.csv`, and a directory
-    adds its line with the trailing `/`.
+    Add a line to `.markers` for each pattern, then track the files it matches now. Files that match
+    later are tracked when they appear. `csv` and `.csv` add `*.csv`. A directory adds its line with
+    a trailing `/`.
 
     > mark tsv
     marked *.tsv (root scope); tracked 1 now
@@ -167,8 +173,15 @@ class MarkCommand(Command):
 
     def __call__(self, arguments: Sequence[str]) -> None:
         """
-        Mark each pattern. Prints the line it added and its kind, and how many files the scan
-        that followed tracked.
+        Mark each pattern. Prints each line added with its kind, and how many files the scan
+        tracked.
+
+        > mark csv data/*.png csv
+        marked *.csv (root scope); tracked 2 now
+        marked data/*.png (dir scope · not subfolders); tracked 1 now
+        already marked: csv
+        > mark !
+        !: Not a marker: '!'
         """
         if not arguments:
             self._feed.error(f"usage: {self.usage}")
@@ -275,13 +288,12 @@ class MarkersCommand(Command):
                 style = "class:error"
             else:
                 style = "class:kind"
-            self._feed.append(
-                [
-                    (style, f"  {line:<{width}}  "),
-                    ("class:info", f"{described:<{kinds}}  "),
-                    ("", owner),
-                ]
-            )
+            row = [
+                (style, f"  {line:<{width}}  "),
+                ("class:info", f"{described:<{kinds}}  "),
+                ("", owner),
+            ]
+            self._feed.append(row)
         for warning in markers.warnings:
             self._feed.error(warning)
 
@@ -292,12 +304,6 @@ class AssetsCommand(Listing):
     name = "assets"
     usage = "assets [EXPRESSION]"
     summary = "the tracked files, sliced or filtered"
-    fields: ClassVar[tuple[str, ...]] = (
-        "id",
-        "path",
-        "name",
-        "cls",
-    )
 
     @property
     def collection(self) -> Assets:
@@ -307,8 +313,8 @@ class AssetsCommand(Listing):
 
 class DirsCommand(Listing):
     """
-    List the directories `.markers` names. A Dir comes and goes with the lines that name it, so
-    `dirs clear` is refused, and `unmark` removes a Dir.
+    List the directories `.markers` names. A Dir exists as long as a line names it. `dirs clear` is
+    refused. `unmark` removes a Dir.
 
     > dirs
     dirs (2 of 2)
@@ -326,12 +332,6 @@ class DirsCommand(Listing):
     name = "dirs"
     usage = "dirs [EXPRESSION]"
     summary = "the directories .markers names, sliced or filtered"
-    fields: ClassVar[tuple[str, ...]] = (
-        "id",
-        "path",
-        "root",
-        "cls",
-    )
 
     @property
     def collection(self) -> Dirs:
@@ -345,25 +345,14 @@ class DirsCommand(Listing):
 
 class EventsCommand(Listing):
     """
-    List the recorded events. `events clear` discards the log. Tracked assets stay tracked for
-    the rest of this session, but the next session starts with only what `.markers` picks up
-    again, because the log that recorded the rest is gone.
+    List the recorded events. `events clear` discards the log. Tracked assets stay tracked for the
+    rest of this session. The next session starts with only the assets `.markers` picks up, since
+    the log that recorded the others is gone.
     """
 
     name = "events"
     usage = "events [EXPRESSION]"
     summary = "the recorded events, sliced or filtered"
-    fields: ClassVar[tuple[str, ...]] = (
-        "id",
-        "entry",
-        "cls",
-        "timestamp",
-        "src_path",
-        "dest_path",
-        "event_type",
-        "rule",
-        "st_size",
-    )
 
     @property
     def collection(self) -> Events:
@@ -372,8 +361,8 @@ class EventsCommand(Listing):
 
 class ClearCommand(Command):
     """
-    Clear the whole project record, like `assets clear` followed by `events clear`. Without
-    `-f`, it only prints what would be cleared. `.markers` is left as it is.
+    Clear the whole project record. Same as `assets clear` then `events clear`. Without `-f`, it
+    prints what would be cleared and does nothing. `.markers` is not changed.
     """
 
     name = "clear"
@@ -419,32 +408,29 @@ class HelpCommand(Command):
         width = max(HELP_WIDTH, *usages, *bindings)
         feed.info("commands")
         for command in listed:
-            feed.append(
-                [
-                    ("class:kind", f"  {command.usage:<{width}}  "),
-                    ("class:info", command.summary),
-                ]
-            )
+            row = [
+                ("class:kind", f"  {command.usage:<{width}}  "),
+                ("class:info", command.summary),
+            ]
+            feed.append(row)
         feed.info("keys")
         for keys, description in KEYS:
-            feed.append(
-                [
-                    ("class:kind", f"  {keys:<{width}}  "),
-                    ("class:info", description),
-                ]
-            )
-        for note in NOTES:
+            row = [
+                ("class:kind", f"  {keys:<{width}}  "),
+                ("class:info", description),
+            ]
+            feed.append(row)
+        for note in NOTES.splitlines():
             feed.info(note)
 
 
 class RestartCommand(Command):
     """
-    Reopen the project in a new interpreter with the same command line. This is how edits to
-    the console's source take effect, since a running session keeps the classes it imported.
+    Reopen the project in a new interpreter with the same command line. Edits to the console's
+    source take effect only after a restart, since a running session keeps the classes it imported.
 
-    A session saved to PATH/.trail comes back with everything it recorded, but loses its
-    command history. With `--nodir`, nothing is on disk, so the log is lost and the restart
-    must be confirmed with `-f`.
+    A session saved to PATH/.trail comes back with everything it recorded, except its command
+    history. With `--nodir`, nothing is on disk. The log is lost, so the restart needs `-f`.
     """
 
     name = "restart"
@@ -483,8 +469,8 @@ class QuitCommand(Command):
 
 class Commands(Node):
     """
-    The commands of one Console, built from every Command subclass in `Command.classes`. It is
-    defined in this module so that importing Commands also registers every command class.
+    The commands of one Console, built from every Command subclass in `Command.classes`. Defined
+    in this module; importing Commands registers every command class.
     """
 
     _parent: Console

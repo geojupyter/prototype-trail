@@ -5,10 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from trail import fmt
+from trail.asset import DirAsset
 from trail.entry import Entries, Entry
 from trail.event import AddDirEvent, RemoveDirEvent
 from trail.markers import Scopes, parse
-from trail.util import bare_repr, container, list_repr
 
 if TYPE_CHECKING:
     from trail.trail import Trail
@@ -17,9 +18,9 @@ if TYPE_CHECKING:
 @dataclass(kw_only=True, eq=False, repr=False)
 class Dir(Entry):
     """
-    A directory named by `.markers`. The log holds its ID and what happened to it, and its root
-    and scopes are taken from `.markers` each time the lines change. A root takes the root
-    scopes at any depth beneath it. Its own scopes are shown relative to it.
+    A directory named by `.markers`. The log holds its ID and its history. Whether it is a root, and
+    its scopes, are taken from `.markers` each time the lines change. A root takes the root scopes
+    at any depth beneath it. Its own scopes are shown relative to it.
 
     >>> trail: Trail
     >>> project: Path
@@ -38,7 +39,7 @@ class Dir(Entry):
     scopes: Scopes = field(default_factory=Scopes)
 
     if TYPE_CHECKING:
-        _parent: Dirs
+        _parent: Dirs = field(init=False, repr=False)
 
     def _repr_items(self) -> Iterator[tuple[str, object]]:
         """
@@ -54,26 +55,26 @@ class Dir(Entry):
         """Shows the id, the path, whether the Dir is a root, and its scopes relative to it."""
         lines = [
             type(self).__name__,
-            f'    id: {bare_repr(self.id)}',
-            f'    path: {bare_repr(str(self.path))}',
+            f'    id: {fmt.bare(self.id)}',
+            f'    path: {fmt.bare(str(self.path))}',
             f'    root: {self.root!r}',
         ]
-        rendered = list_repr('scopes', self.scopes.relative, len(self.scopes))
+        rendered = fmt.bracketed('scopes', self.scopes.relative, len(self.scopes))
         lines.extend(rendered)
         return '\n'.join(lines)
 
     @property
-    def recursive(self) -> bool:
+    def is_recursive(self) -> bool:
         """
         Whether anything below the directory's own files may be tracked through it. A root is
         recursive, and so is a Dir with a scope such as `./**/*.tif`.
 
-        >>> self.recursive
+        >>> self.is_recursive
         False
         """
         return (
             self.root
-            or self.scopes.recursive
+            or self.scopes.is_recursive
         )
 
     def decide(self, path: Path) -> str | None:
@@ -94,10 +95,15 @@ def build(
         excluded: Collection[Path] = (),
 ) -> tuple[dict[Path, Dir], Scopes]:
     """
-    Returns the directories the lines of `.markers` name, in the order they are first named,
-    and the root scopes among the lines. Lines that do not parse are left out. So are the
-    directories in `excluded`, containers and directories inside containers, since the inside
-    of a directory asset is never walked.
+    Returns the directories that the lines of `.markers` name, in the order they are first named,
+    and the root scopes among the lines.
+
+    These are left out:
+    - Lines that do not parse.
+    - Directories in `excluded`.
+    - Dirassets.
+    - Directories inside a dirasset or an excluded directory. A dirasset's contents are never
+      walked.
 
     >>> project: Path
     >>> build(['./', '*.csv', 'data/*.png'], project)[1]
@@ -120,13 +126,11 @@ def build(
             continue
         lineage = (base, *base.parents)
         inside = any(
-            container(path)
+            path in excluded
+            or DirAsset.is_match(path)
             for path in lineage
         )
-        if (
-            base in excluded
-            or inside
-        ):
+        if inside:
             continue
         order[base] = None
         if pattern:
@@ -134,17 +138,10 @@ def build(
             patterns.setdefault(base, []).append(pattern)
         else:
             roots.add(base)
-    dirs = {
-        path: Dir(
-            path=path,
-            root=path in roots,
-            scopes=Scopes(
-                scoped.get(path, ()),
-                patterns.get(path, ()),
-            ),
-        )
-        for path in order
-    }
+    dirs: dict[Path, Dir] = {}
+    for path in order:
+        own = Scopes(scoped.get(path, ()), patterns.get(path, ()))
+        dirs[path] = Dir(path=path, root=path in roots, scopes=own)
     # a root scope's pattern is its line
     scopes = Scopes(unanchored, unanchored)
     return dirs, scopes
@@ -156,9 +153,9 @@ def match(
         scopes: Scopes,
 ) -> str | None:
     """
-    Returns the line of `.markers` that decides a path, or None if none does. The dir scopes of
-    the path's parents are checked first, deepest first, the way git ranks nested .gitignore
-    files. If none decides, the root scopes are checked beneath the nearest root.
+    Returns the line of `.markers` that decides a path, or None. The dir scopes of the path's
+    parents are checked first, deepest first, as git ranks nested .gitignore files. If none decides,
+    the root scopes are checked beneath the nearest root.
 
     >>> trail: Trail
     >>> project: Path
@@ -187,10 +184,10 @@ def match(
 
 class Dirs(Entries[Dir]):
     """
-    The directories `.markers` names, by id and by path, and the root scopes, which apply
-    beneath every root. A subfolder of a root is covered by its ancestor and has no Dir of its
-    own, so this is not the set of watched directories. `refresh` keeps the Dirs in line with
-    `.markers`, logging each Dir that comes or goes.
+    The directories `.markers` names, by id and by path, plus the root scopes, which apply beneath
+    every root. A subfolder of a root has no Dir of its own, since its ancestor covers it. So this
+    is not the set of watched directories. `refresh` keeps the Dirs in line with `.markers` and logs
+    each Dir that comes or goes.
 
     >>> trail: Trail
     >>> trail.dirs
@@ -236,10 +233,10 @@ class Dirs(Entries[Dir]):
 
     def refresh(self) -> None:
         """
-        Bring the live Dirs in line with `.markers`. A directory the lines name without a Dir
-        gets one, logged as an AddDirEvent. A Dir no line names any more is logged as a
-        RemoveDirEvent. A Dir that stays keeps its ID and takes its root and scopes from the
-        lines. Directory assets are never Dirs.
+        Bring the live Dirs in line with `.markers`. A directory that a line names gets a Dir,
+        logged as an AddDirEvent. A Dir that no line names is removed and logged as a
+        RemoveDirEvent. A Dir that stays keeps its ID and takes its root and scopes from the lines.
+        Directory assets are never Dirs.
         """
         trail = self._trail
         markers = trail.markers

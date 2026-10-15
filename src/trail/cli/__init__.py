@@ -109,12 +109,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def relaunch() -> NoReturn:
     """
-    Replace this process with a new interpreter running the same command line, so the console
+    Replace this process with a new interpreter running the same command line. The console then
     reloads all of its code.
 
-    `sys.orig_argv` holds the full original command line, including the interpreter and its
-    flags. This lets `python -m trail` and the `trail` script restart the same way. The first
-    token is looked up on PATH, as the shell did.
+    `sys.orig_argv` holds the full original command line, including the interpreter and its flags.
+    It restarts `python -m trail` and the `trail` script the same way. The first token is looked up
+    on PATH, as the shell did.
     """
     sys.stdout.flush()
     sys.stderr.flush()

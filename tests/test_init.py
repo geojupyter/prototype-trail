@@ -28,7 +28,7 @@ INTERRUPT = "\x03"
 
 class TestInit:
     """
-    The walkthrough driven the way a terminal drives it. The keys are sent up front; each prompt
+    The walkthrough driven the way a terminal drives it. The keys are sent up front. Each prompt
     takes what it needs and leaves the rest as typeahead for the next one.
     """
 

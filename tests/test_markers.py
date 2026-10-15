@@ -99,6 +99,17 @@ class TestMarkers:
             assert trail.mark('.hidden/') == ['.hidden/']
             assert root / '.hidden' / 'secret.csv' in trail.assets
 
+    def test_marking_one_dirasset_tracks_it(self) -> None:
+        with self.workspace() as root:
+            cube = root / 'folder' / 'cube.zarr'
+            cube.mkdir()
+            (cube / 'zarr.json').write_text('{}', encoding='utf-8')
+            trail = Trail(root)
+            assert trail.mark('folder/cube.zarr') == ['folder/cube.zarr']
+            assert trail.assets[cube].is_directory
+            assert trail.events.select[-1].rule == 'folder/cube.zarr'
+            assert not trail.markers.warnings
+
     def test_a_dir_outside_the_project_is_marked(self) -> None:
         with self.workspace() as root, TemporaryDirectory() as elsewhere:
             outside = Path(elsewhere).resolve()
@@ -119,7 +130,7 @@ class TestMarkers:
         async def run() -> None:
             with self.workspace() as root:
                 trail = Trail(root)
-                assert trail.watchdog.ensure()
+                assert trail.watchdog.session.start()
                 created = root / 'created.csv'
                 ignored = root / 'created.txt'
                 ignored.write_text('a\n', encoding='utf-8')
@@ -127,7 +138,7 @@ class TestMarkers:
                 async with asyncio.timeout(5):
                     while created not in trail.assets:
                         await asyncio.sleep(0.01)
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
                 assert ignored not in trail.assets
                 assert trail.assets[created].id in {
                     event.entry.id
@@ -142,7 +153,7 @@ class TestMarkers:
             with self.workspace() as root:
                 trail = Trail(root)
                 folder = root / 'folder'
-                assert trail.watchdog.ensure()
+                assert trail.watchdog.session.start()
                 unmarked = folder / 'unmarked.txt'
                 marked = folder / 'marked.csv'
                 unmarked.write_text('a\n', encoding='utf-8')
@@ -160,7 +171,7 @@ class TestMarkers:
                             or moved / 'inner.csv' not in trail.assets
                     ):
                         await asyncio.sleep(0.01)
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
                 assert moved not in trail.dirs
                 assert unmarked not in trail.assets
                 assert moved / 'inner.txt' not in trail.assets
@@ -181,6 +192,20 @@ class TestMarkers:
             for line in lines[1:]:
                 assert line.startswith('*.')
                 assert kind(line, Path('/')) == 'root scope'
+
+    def test_the_geospatial_preset_tracks_safe_products(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            product = root / 'S2A_MSIL2A_20260101T100000_N0510_R022_T33UUP_20260101T120000.SAFE'
+            (product / 'GRANULE').mkdir(parents=True)
+            (product / 'manifest.safe').write_text('<xfdu/>\n', encoding='utf-8')
+            trail = Trail(root, markers='geospatial')
+            assert '*.safe' in trail.markers
+            # matching ignores case, so the line takes the product's upper-case suffix
+            asset = trail.assets[product]
+            assert asset.is_directory
+            assert trail.events.select[-1].rule == '*.safe'
+            assert product / 'manifest.safe' not in trail.assets
 
     def test_a_new_trail_copies_the_default_markers(self) -> None:
         with self.workspace() as root:
@@ -305,6 +330,11 @@ class TestWarnings:
             assert warnings[0].startswith(f"{root / '.markers'}:2: 'data' names a directory")
             assert "did you mean 'data/'" in warnings[0]
             assert warnings[1].startswith(f"{root / '.markers'}:3: './data' names a directory")
+
+    def test_a_dirasset_line_draws_no_slash_warning(self) -> None:
+        with self.trail('./\ncube.zarr\n./cube.zarr\n*.csv\n') as (trail, root):
+            assert trail.markers.warnings == []
+            assert trail.assets[root / 'cube.zarr'].is_directory
 
     def test_a_line_that_does_not_parse(self) -> None:
         with self.trail('# x\n./\n!\n*.csv\n') as (trail, root):

@@ -16,11 +16,15 @@ from trail.checkpoint import Checkpoint
 from trail.event import (
     AddAssetEvent,
     AddDirEvent,
+    DirectoryAccessEvent,
     Events,
     RemoveAssetEvent,
     RemoveDirEvent,
     WatchdogEvent,
 )
+
+# no watchdog backend other than inotify reports a file being opened
+needs_opens = pytest.mark.skipif(sys.platform != 'linux', reason='only inotify reports opens')
 
 
 class TestTrail:
@@ -63,6 +67,7 @@ class TestTrail:
                and event.get.src_path == str(csv)
         ), None)
 
+    @needs_opens
     def test_pathless_track_and_open(self) -> None:
         async def run() -> None:
             with self.workspace() as root:
@@ -72,7 +77,7 @@ class TestTrail:
                 addition = trail.events.select[0]
                 assert isinstance(addition, AddAssetEvent)
                 assert addition.entry is entry
-                assert trail.watchdog.observer.is_alive()
+                assert trail.watchdog.session.observer.is_alive()
                 previous = len(trail.events)
                 with csv.open(encoding="utf-8") as stream:
                     assert stream.read() == "name,value\nexample,42\n"
@@ -81,7 +86,7 @@ class TestTrail:
                             opened := self.opened_event(trail, csv, previous)
                     ) is None:
                         await asyncio.sleep(0.01)
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
                 assert opened.entry is entry
                 assert trail.dir is None
                 assert trail.events.jsonl.path is None
@@ -89,39 +94,41 @@ class TestTrail:
 
         asyncio.run(run())
 
+    @needs_opens
     def test_passive_instantiation_observes_without_a_context(self) -> None:
         async def run() -> None:
             with self.workspace() as root:
                 csv = root / "dataset.csv"
                 trail = Trail()
                 entry = trail.track(csv)
-                assert trail.watchdog.running
-                assert trail.watchdog.observer.is_alive()
+                assert trail.watchdog.session.is_active
+                assert trail.watchdog.session.observer.is_alive()
                 previous = len(trail.events)
                 with csv.open(encoding="utf-8") as stream:
                     assert stream.read() == "name,value\nexample,42\n"
                 async with asyncio.timeout(5):
                     while (opened := self.opened_event(trail, csv, previous)) is None:
                         await asyncio.sleep(0.01)
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
                 assert opened.entry is entry
-                assert not trail.watchdog.running
+                assert not trail.watchdog.session.is_active
 
         asyncio.run(run())
 
+    @needs_opens
     def test_passive_instantiation_is_dormant_without_a_loop(self) -> None:
         with self.workspace() as root:
             csv = root / 'dataset.csv'
             trail = Trail()
             entry = trail.track(csv)
-            assert not trail.watchdog.ensure()
-            assert not trail.watchdog.running
+            assert not trail.watchdog.session.start()
+            assert not trail.watchdog.session.is_active
             assert root in trail.watchdog.desired()
 
             async def run() -> None:
                 # the dormant membership becomes a live watch once a loop exists
-                assert trail.watchdog.ensure()
-                assert trail.watchdog.observer.is_alive()
+                assert trail.watchdog.session.start()
+                assert trail.watchdog.session.observer.is_alive()
                 previous = len(trail.events)
                 with csv.open(encoding='utf-8') as stream:
                     assert stream.read() == 'name,value\nexample,42\n'
@@ -130,24 +137,25 @@ class TestTrail:
                             opened := self.opened_event(trail, csv, previous)
                     ) is None:
                         await asyncio.sleep(0.01)
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
                 assert opened.entry is entry
 
             asyncio.run(run())
 
-    def test_watchdog_context_starts_and_stops_the_session(self) -> None:
+    @needs_opens
+    def test_the_session_context_starts_and_stops_a_run(self) -> None:
         with self.workspace() as root:
             csv = root / 'dataset.csv'
             trail = Trail()
             entry = trail.track(csv)
-            assert not trail.watchdog.running
+            assert not trail.watchdog.session.is_active
 
             async def run() -> None:
-                async with trail.watchdog.context():
-                    assert trail.watchdog.running
-                    observer = trail.watchdog.observer
+                async with trail.watchdog.session:
+                    assert trail.watchdog.session.is_active
+                    observer = trail.watchdog.session.observer
                     assert observer.is_alive()
-                    assert root in trail.watchdog.watches
+                    assert root in trail.watchdog.session.watches
                     previous = len(trail.events)
                     with csv.open(encoding='utf-8') as stream:
                         assert stream.read() == 'name,value\nexample,42\n'
@@ -158,43 +166,42 @@ class TestTrail:
                             await asyncio.sleep(0.01)
 
                 assert opened.entry is entry
-                # the session is torn down, and the next one schedules what is desired again
-                assert not trail.watchdog.running
+                # the run is torn down, and the next one schedules what is desired again
+                assert not trail.watchdog.session.is_active
                 assert not observer.is_alive()
-                assert trail.watchdog.observer is None
-                assert trail.watchdog.queue is None
-                assert trail.watchdog.watches is None
+                assert not trail.watchdog.session
                 assert root in trail.watchdog.desired()
 
                 # native observers cannot restart, so a second context builds a new one
-                async with trail.watchdog.context():
-                    assert trail.watchdog.running
-                    assert trail.watchdog.observer is not observer
-                    assert trail.watchdog.observer.is_alive()
-                    assert root in trail.watchdog.watches
-                assert not trail.watchdog.running
+                async with trail.watchdog.session:
+                    assert trail.watchdog.session.is_active
+                    assert trail.watchdog.session.observer is not observer
+                    assert trail.watchdog.session.observer.is_alive()
+                    assert root in trail.watchdog.session.watches
+                assert not trail.watchdog.session.is_active
 
             asyncio.run(run())
 
-    def test_watchdog_context_adopts_a_passive_session(self) -> None:
+    def test_the_session_context_adopts_an_active_run(self) -> None:
         async def run() -> None:
             with self.workspace() as root:
                 csv = root / 'dataset.csv'
                 trail = Trail()
                 trail.track(csv)
-                assert trail.watchdog.running
-                observer = trail.watchdog.observer
+                assert trail.watchdog.session.is_active
+                observer = trail.watchdog.session.observer
 
-                # entering the context must adopt the running session, not build a second one
-                async with trail.watchdog.context():
-                    assert trail.watchdog.observer is observer
-                    assert trail.watchdog.running
+                # entering the context must adopt the active run, not start a second one
+                async with trail.watchdog.session:
+                    assert trail.watchdog.session.observer is observer
+                    assert trail.watchdog.session.is_active
 
-                assert not trail.watchdog.running
+                assert not trail.watchdog.session.is_active
                 assert not observer.is_alive()
 
         asyncio.run(run())
 
+    @needs_opens
     def test_persistent_track_open_and_new_session(self) -> None:
         async def run() -> None:
             with self.workspace() as root:
@@ -210,7 +217,7 @@ class TestTrail:
                     ) is None:
                         await asyncio.sleep(0.01)
                 # quiet this trail so the reloaded ones are the only writers
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
                 assert opened.entry is entry
                 records = [
                     event.to_record()
@@ -266,7 +273,7 @@ class TestTrail:
                             reopened := self.opened_event(restored, csv, previous)
                     ) is None:
                         await asyncio.sleep(0.01)
-                await restored.watchdog.stop()
+                await restored.watchdog.session.stop()
                 assert reopened.entry is restored_entry
                 previous_ids = {
                     record["id"]
@@ -275,10 +282,11 @@ class TestTrail:
                 assert reopened.id not in previous_ids
                 third = Trail(root)
                 assert reopened.id in third.events
-                await third.watchdog.stop()
+                await third.watchdog.session.stop()
 
         asyncio.run(run())
 
+    @needs_opens
     def test_offtrailed_file_stays_offtrailed_after_new_session(self) -> None:
         async def run() -> None:
             with self.workspace() as root:
@@ -290,7 +298,7 @@ class TestTrail:
                 entry = trail.track(csv)
                 other_entry = trail.track(other_csv)
                 trail.offtrail(csv)
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
                 restored = Trail(root)
                 assert csv not in restored.assets
                 removal = restored.events.select[-1]
@@ -307,14 +315,14 @@ class TestTrail:
                             opened := self.opened_event(restored, other_csv, previous)
                     ) is None:
                         await asyncio.sleep(0.01)
-                await restored.watchdog.stop()
+                await restored.watchdog.session.stop()
 
                 assert opened.entry.id == other_entry.id
                 assert csv not in restored.assets
                 assert self.records(restored.events.select[previous:]) == [opened]
                 reloaded = Trail(root)
                 assert csv not in reloaded.assets
-                await reloaded.watchdog.stop()
+                await reloaded.watchdog.session.stop()
 
         asyncio.run(run())
 
@@ -412,6 +420,7 @@ class TestTrail:
             assert readdition.entry.id == current_entry.id
             assert restored.events.jsonl.path.read_bytes() == history
 
+    @needs_opens
     def test_deleted_csv_history_can_be_restored(self) -> None:
         async def run() -> None:
             # open a workspace
@@ -427,7 +436,7 @@ class TestTrail:
                     while self.opened_event(trail, csv, previous) is None:
                         await asyncio.sleep(0.01)
                 # the deletion below must not be recorded
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
                 records = [
                     event.to_record()
                     for event in trail.events
@@ -439,7 +448,7 @@ class TestTrail:
                            event.to_record()
                            for event in restored.events
                        ] == records
-                await restored.watchdog.stop()
+                await restored.watchdog.session.stop()
 
         asyncio.run(run())
 
@@ -532,6 +541,7 @@ class TestTrail:
             assert removed == readded[::-1]
             assert len(trail.assets) == 0
 
+    @needs_opens
     def test_select_survives_file_changes_and_reload(self) -> None:
         async def run() -> None:
             with self.workspace() as root:
@@ -562,7 +572,7 @@ class TestTrail:
                             for event in trail.events.select[previous:]
                     ):
                         await asyncio.sleep(0.01)
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
 
                 assert trail.events.select[-1].event_type == 'deleted'
                 # the first event adds the project directory's Dir
@@ -584,7 +594,7 @@ class TestTrail:
                 restored.events.jsonl.read()
                 assert restored.events.ids == expected_ids
                 assert restored.events.jsonl.path.read_bytes() == history
-                await restored.watchdog.stop()
+                await restored.watchdog.session.stop()
 
         asyncio.run(run())
 
@@ -681,14 +691,14 @@ class TestTrail:
                     ):
                         await asyncio.sleep(0.01)
                 # the removals below must not be recorded
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
 
                 file_entry = trail.assets[tsv]
                 nested_entry = trail.assets[nested]
                 assert self.records(trail.assets) == [file_entry, nested_entry]
                 # a new subfolder of a root is watched, but it is not a Dir
                 assert list(trail.dirs.path2entry) == [root]
-                assert directory in trail.watchdog.desired()
+                assert trail.watchdog.covers(directory)
                 rules = [
                     event.rule
                     for event in trail.events
@@ -709,8 +719,8 @@ class TestTrail:
                 assert restored.assets.ids == []
                 reloaded = Trail(root)
                 assert self.records(reloaded.assets) == []
-                await restored.watchdog.stop()
-                await reloaded.watchdog.stop()
+                await restored.watchdog.session.stop()
+                await reloaded.watchdog.session.stop()
 
         asyncio.run(run())
 
@@ -783,6 +793,7 @@ class TestTrail:
             assert csv not in reloaded.assets
             assert reloaded.events.ids == restored.events.ids
 
+    @needs_opens
     def test_folder_auto_tracks_created_files_and_nested_subdirectories(self) -> None:
         async def run() -> None:
             with self.workspace() as root:
@@ -817,7 +828,7 @@ class TestTrail:
                     while nested_file not in trail.assets:
                         await asyncio.sleep(0.01)
                 nested_file_entry = trail.assets[nested_file]
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
 
                 # the dataset.csv beside the folder is outside every root
                 assert root / 'dataset.csv' not in trail.assets
@@ -825,7 +836,7 @@ class TestTrail:
                 assert nested_file_entry.path == nested_file
                 # the new subfolder is watched, but gets no Dir
                 assert list(trail.dirs.path2entry) == [folder]
-                assert subdirectory in trail.watchdog.desired()
+                assert trail.watchdog.covers(subdirectory)
 
         asyncio.run(run())
 
@@ -846,7 +857,7 @@ class TestTrail:
                             for event in trail.events.select[previous:]
                     ):
                         await asyncio.sleep(0.01)
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
 
                 assert trail.assets[renamed] is entry
                 assert entry.id == identifier
@@ -858,7 +869,7 @@ class TestTrail:
                 assert restored.assets.ids == [identifier]
                 assert restored.assets[renamed].id == identifier
                 assert csv not in restored.assets
-                await restored.watchdog.stop()
+                await restored.watchdog.session.stop()
 
         asyncio.run(run())
 
@@ -872,7 +883,7 @@ class TestTrail:
                 inner = nested / 'inner.csv'
                 inner.write_text('name,value\ninner,1\n', encoding='utf-8')
                 trail = Trail(root)
-                assert trail.watchdog.ensure()
+                assert trail.watchdog.session.start()
                 inner_entry = trail.assets[inner]
                 identifiers = trail.assets.ids.copy()
 
@@ -882,18 +893,18 @@ class TestTrail:
                 async with asyncio.timeout(5):
                     while moved not in trail.assets:
                         await asyncio.sleep(0.01)
-                await trail.watchdog.stop()
+                await trail.watchdog.session.stop()
 
                 assert trail.assets[moved] is inner_entry
                 assert inner not in trail.assets
                 assert trail.assets.ids == identifiers
-                assert renamed / 'nested' in trail.watchdog.desired()
-                assert nested not in trail.watchdog.desired()
+                assert trail.watchdog.covers(renamed / 'nested')
+                assert not trail.watchdog.covers(nested)
 
                 restored = Trail(root)
                 assert restored.assets.ids == identifiers
                 assert restored.assets[moved].id == inner_entry.id
-                await restored.watchdog.stop()
+                await restored.watchdog.session.stop()
 
         asyncio.run(run())
 
@@ -914,32 +925,35 @@ class TestTrail:
                 addition = trail.events.select[1]
                 assert addition.rule == '*.zarr'
                 assert addition.st_size == 5
-                assert cube in trail.watchdog.desired()
-                assert cube / 'band' not in trail.watchdog.desired()
+                # the project's recursive watch sees inside it
+                assert trail.watchdog.covers(cube)
+                assert trail.watchdog.covers(cube / 'band')
 
-                assert trail.watchdog.ensure()
+                trail.watchdog.session.idle_gap = 0.1
+                trail.watchdog.session.debounce = 0
+                assert trail.watchdog.session.start()
                 previous = len(trail.events)
                 (cube / 'zarr.json').write_text('{"a": 1}', encoding='utf-8')
                 (cube / '1').write_bytes(b'd')
+                (cube / 'band' / '1').write_bytes(b'e')
                 async with asyncio.timeout(5):
-                    while not any(
-                            event.event_type == 'modified'
-                            for event in trail.events.select[previous:]
-                    ):
+                    while not trail.events.select[previous:]:
                         await asyncio.sleep(0.01)
-                await trail.watchdog.stop()
-                recorded = self.records(trail.events.select[previous:])
-                # the writes inside are recorded against the container, not file by file
-                assert all(
-                    event.entry is asset
-                    and event.src_path == str(cube)
-                    for event in recorded
-                )
+                await trail.watchdog.session.stop()
+                # the writes inside are recorded as one access to the container, not file by file
+                [access] = self.records(trail.events.select[previous:])
+                assert isinstance(access, DirectoryAccessEvent)
+                assert access.entry is asset
+                assert access.src_path == str(cube)
+                assert access.event_type == 'modified'
+                assert access.count['modified'] > 0
+                assert access.started <= access.timestamp
                 assert cube / '1' not in trail.assets
 
                 restored = Trail(root)
                 assert restored.assets[cube].id == asset.id
                 assert restored.assets[cube].is_directory
+                await restored.watchdog.session.stop()
 
         asyncio.run(run())
 
@@ -953,11 +967,14 @@ class TestTrail:
             (partition / 'part-0.csv').write_text('a\n', encoding='utf-8')
             trail = Trail(root)
             assert partition / 'part-0.parquet' in trail.assets
-            hive = trail.track(table)
+            absorbed = 'tracking table whole offtrails 2 assets inside it'
+            with pytest.warns(UserWarning, match=absorbed):
+                hive = trail.track(table)
             assert hive.is_directory
             assert trail.events.select[-1].rule is None
-            # files already tracked inside stay tracked, but nothing new inside is walked
-            assert partition / 'part-0.parquet' in trail.assets
+            # files already tracked inside are part of it now, and nothing new inside is walked
+            assert partition / 'part-0.parquet' not in trail.assets
+            assert partition / 'part-0.csv' not in trail.assets
             (partition / 'part-1.parquet').write_bytes(b'y')
             assert trail.assets.scan() == ()
             assert table not in trail.dirs
@@ -978,12 +995,12 @@ if __name__ == "__main__":
             'passive instantiation stays dormant without a loop',
         ),
         (
-            'test_watchdog_context_starts_and_stops_the_session',
-            'the watchdog context starts and stops the session',
+            'test_the_session_context_starts_and_stops_a_run',
+            'the session context starts and stops a run',
         ),
         (
-            'test_watchdog_context_adopts_a_passive_session',
-            'the watchdog context adopts a passive session',
+            'test_the_session_context_adopts_an_active_run',
+            'the session context adopts an active run',
         ),
         (
             "test_persistent_track_open_and_new_session",

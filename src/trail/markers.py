@@ -3,15 +3,16 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterable, Iterator, Sequence
-from functools import cached_property
+from functools import cache, cached_property
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from pathspec import PathSpec
 
+from trail import fmt
+from trail.asset import DirAsset
 from trail.node import Node
-from trail.util import asset_repr, container, lines_repr
 
 if TYPE_CHECKING:
     from trail.trail import Trail
@@ -23,6 +24,8 @@ ANCHORS: Final = ('/', './', '../', '~/')
 
 # directory of the markers files that ship with trail
 MARKERS: Final = files('trail') / 'markers'
+# a line that names files by extension alone, such as `*.csv`
+EXTENSION: Final = re.compile(r'\*\.([^*?[/]+)')
 
 
 def available() -> list[str]:
@@ -34,13 +37,31 @@ def available() -> list[str]:
     )
 
 
+@cache
+def extensions() -> tuple[str, ...]:
+    """
+    Returns the extensions that the `*.ext` lines of the bundled markers files name. Files are
+    read in the order `available` lists them. Lines are read in file order. Each extension is
+    listed once.
+    """
+    found: dict[str, None] = {}
+    for name in available():
+        text = (MARKERS / f'{name}.txt').read_text(encoding='utf-8')
+        for line in TXT.markers(text.splitlines()):
+            match = EXTENSION.fullmatch(line)
+            if match is not None:
+                found[match.group(1).lower()] = None
+    out = tuple(found)
+    return out
+
+
 def parse(
         line: str,
         project: Path,
 ) -> tuple[Path | None, str]:
     """
-    Returns the directory a line of `.markers` belongs to and the pattern compiled from it. The
-    directory is None for a root scope, and the pattern is empty for a directory marker. Raises
+    Returns the directory a line of `.markers` belongs to, and the pattern compiled from it. The
+    directory is None for a root scope. The pattern is empty for a directory marker. Raises
     ValueError for a line that is not a valid marker.
 
     >>> project: Path
@@ -134,9 +155,14 @@ def kind(
         project: Path,
 ) -> str:
     """
-    Returns how a line of `.markers` is read: 'root', 'root scope', 'dir scope' or
-    'dir scope · not subfolders'. A scope starting with '!' gets ' · exclude' after it. A line
-    that does not parse is 'invalid'.
+    Returns how a line of `.markers` is read:
+    - 'root'
+    - 'root scope'
+    - 'dir scope'
+    - 'dir scope · not subfolders'
+    - 'invalid', for a line that does not parse
+
+    A scope that starts with '!' gets ' · exclude' after it.
 
     >>> project: Path
     >>> kind('data/*.png', project)
@@ -166,13 +192,15 @@ def slashless(
         project: Path,
 ) -> Path | None:
     """
-    Returns the directory a line without wildcards names, if it lacks its trailing '/'. Such a
-    line tracks everything under the directory, of every type.
+    Returns the directory that a line without wildcards names, if the line has no trailing '/'. Such
+    a line tracks everything under the directory, of every type. A dirasset is left out, since its
+    line has no '/'.
 
     >>> project: Path
     >>> slashless('data', project)
     PosixPath('/tmp/tmpp_bl05lq/data')
     >>> slashless('data/', project)
+    >>> slashless('cube.zarr', project)
     """
     if (
         line.startswith('!')
@@ -188,7 +216,10 @@ def slashless(
         target = project / line
     else:
         target = base / pattern.lstrip('/')
-    if target.is_dir():
+    if (
+        target.is_dir()
+        and not DirAsset.is_match(target)
+    ):
         return target
     return None
 
@@ -199,15 +230,16 @@ def canonical(
         cwd: Path,
 ) -> str:
     """
-    Returns the line of `.markers` that typed text stands for. Relative paths are read from
-    `cwd` and written relative to `project`.
+    Returns the line of `.markers` that typed text stands for. Relative paths are read from `cwd`
+    and written relative to `project`.
 
-    'csv', '.csv' and '**/*.csv' all become '*.csv'. An existing directory gets its trailing
-    '/'. A path inside the project is written relative to it, a path under the home directory
-    starts with '~/', and any other path stays absolute. A leading '!' is kept.
+    'csv', '.csv' and '**/*.csv' all become '*.csv'. An existing directory gets a trailing '/'. A
+    dirasset such as `cube.zarr` does not, since its line tracks it whole. A path inside the project
+    is written relative to it. A path under the home directory starts with '~/'. Any other path
+    stays absolute. A leading '!' is kept.
 
-    A single word that names an existing path is read as that path, and any other single word
-    as an extension. './x' forces the path reading, and '.x' or '*.x' force the extension.
+    A single word that names an existing path is read as that path. Any other single word is read as
+    an extension. './x' forces the path reading. '.x' or '*.x' forces the extension.
 
     >>> project: Path
     >>> canonical('**/*.csv', project, project)
@@ -257,13 +289,15 @@ def canonical_path(
         cwd: Path,
 ) -> str:
     """
-    Returns the line for text that is read as a path. The part before the first wildcard is
-    resolved from `cwd`, and the rest is kept as typed. `negated` says whether the line starts
-    with '!', which `body` no longer holds.
+    Returns the line for text that is read as a path. The part before the first wildcard is resolved
+    from `cwd`. The rest is kept as typed. `negated` says whether the line starts with '!'. `body`
+    no longer holds the '!'.
 
     >>> project: Path
     >>> canonical_path('data', False, project, project)
     'data/'
+    >>> canonical_path('cube.zarr', False, project, project)
+    './cube.zarr'
     """
     trailing = body.endswith('/')
     parts = body.rstrip('/').split('/')
@@ -281,9 +315,11 @@ def canonical_path(
     ):
         literal = '/'
     base = (cwd / Path(literal or '.').expanduser()).resolve()
+    # a dirasset is tracked whole, so its line names it without the '/' of a directory to watch
     bare = (
         not rest
         and base.is_dir()
+        and not DirAsset.is_match(base)
     )
     directory = trailing or bare
     if base.is_relative_to(project):
@@ -347,7 +383,7 @@ class Scopes(Sequence[str]):
 
     def __repr__(self) -> str:
         """Lists the lines as written in `.markers`."""
-        return lines_repr(type(self).__name__, self.lines)
+        return fmt.lines(type(self).__name__, self.lines)
 
     @cached_property
     def spec(self) -> PathSpec:
@@ -382,11 +418,11 @@ class Scopes(Sequence[str]):
         return tuple(out)
 
     @cached_property
-    def recursive(self) -> bool:
+    def is_recursive(self) -> bool:
         """
         Whether any pattern reaches below the directory it belongs to. See `reaches_subfolders`.
 
-        >>> self.recursive
+        >>> self.is_recursive
         False
         """
         return any(
@@ -408,14 +444,14 @@ class Scopes(Sequence[str]):
         return self.lines[index]
 
 
-class Text(Node):
+class TXT(Node):
     """
-    The `.markers` file beside the trail directory. Every change rewrites it with `compose`,
-    which keeps the comments and blank lines a user writes into it.
+    The `.markers` file beside the trail directory. Every change rewrites it with `compose`.
+    `compose` keeps the user's comments and blank lines.
 
     >>> trail: Trail
-    >>> trail.markers.text
-    Text
+    >>> trail.markers.txt
+    TXT
         path: /tmp/tmpp_bl05lq/.markers
         tail:
             ./
@@ -427,7 +463,7 @@ class Text(Node):
 
     def __repr__(self) -> str:
         """Shows the path and the last lines of the file."""
-        return asset_repr(type(self).__name__, self.path)
+        return fmt.asset(type(self).__name__, self.path)
 
     @cached_property
     def path(self) -> Path | None:
@@ -437,7 +473,7 @@ class Text(Node):
             return path.parent / '.markers'
         return None
 
-    def _lines(self) -> list[str]:
+    def lines(self) -> list[str]:
         """Returns the lines of the file, comments included. A missing file has none."""
         path = self.path
         if (
@@ -448,7 +484,7 @@ class Text(Node):
         return path.read_text(encoding='utf-8').splitlines()
 
     @staticmethod
-    def _marker(line: str) -> str | None:
+    def line2marker(line: str) -> str | None:
         """Returns a line stripped, or None for a blank line or a comment."""
         stripped = line.strip()
         if (
@@ -463,26 +499,26 @@ class Text(Node):
         """Returns the markers among the lines of a markers file, stripped and in order."""
         out = []
         for line in lines:
-            marker = cls._marker(line)
+            marker = cls.line2marker(line)
             if marker is not None:
                 out.append(marker)
         return out
 
     def numbered(self) -> Iterator[tuple[int, str]]:
         """Yields each marker in the file with its line number."""
-        for number, line in enumerate(self._lines(), start=1):
-            marker = self._marker(line)
+        for number, line in enumerate(self.lines(), start=1):
+            marker = self.line2marker(line)
             if marker is not None:
                 yield number, marker
 
     def read(self) -> None:
         """Load the lines of the file into the Markers, without comments or blank lines."""
-        self._parent.data[:] = self.markers(self._lines())
+        self._parent.data[:] = self.markers(self.lines())
 
     def create(self, markers: os.PathLike[str] | str) -> None:
         """
-        Create the project's .markers file by copying a markers file. Does nothing if
-        .markers already exists.
+        Create the project's .markers file by copying a markers file. Does nothing if it already
+        exists.
 
         markers:
             str:
@@ -526,7 +562,7 @@ class Text(Node):
 
     def replace(self, markers: Sequence[str]) -> None:
         """Rewrite the file to hold `markers`, keeping its comments. See `compose`."""
-        self.write(self.compose(self._lines(), markers))
+        self.write(self.compose(self.lines(), markers))
 
     @classmethod
     def compose(
@@ -535,16 +571,15 @@ class Text(Node):
             markers: Sequence[str],
     ) -> str:
         """
-        Returns the text of a markers file holding `markers`. It starts from `lines`, so the
-        comments, and the lines that stay, are kept as written and in order. A line written
-        twice stays twice, since a later copy can decide differently. Markers not in `lines`
-        go to the end.
+        Returns the text of a markers file that holds `markers`. It starts from `lines`, so comments
+        and the lines that stay are kept as written and in order. A line written twice stays twice,
+        since a later copy can decide differently. Markers not in `lines` go at the end.
         """
         wanted = set(markers)
         kept = []
         present = set()
         for line in lines:
-            marker = cls._marker(line)
+            marker = cls.line2marker(line)
             if marker is None:
                 kept.append(line)
             elif marker in wanted:
@@ -555,11 +590,12 @@ class Text(Node):
             for marker in dict.fromkeys(markers)
             if marker not in present
         )
-        return ''.join(
+
+        out = ''.join(
             f'{line}\n'
             for line in kept
         )
-
+        return out
 
 class Markers(
     Node,
@@ -582,7 +618,7 @@ class Markers(
 
     def __init__(self, parent: Trail | None = None) -> None:
         """
-        Start with no lines. `Text.read` loads them from the file. `imported` says whether
+        Start with no lines. `TXT.read` loads them from the file. `imported` says whether
         `.markers` was copied from a file of the user's own.
         """
         Node.__init__(self, parent)
@@ -590,15 +626,15 @@ class Markers(
         self.imported = False
 
     @cached_property
-    def text(self) -> Text:
-        """Returns the Text that reads and writes the `.markers` file."""
-        return Text(self)
+    def txt(self) -> TXT:
+        """Returns the TXT instance that wraps the `.markers` text file."""
+        return TXT(self)
 
     @property
     def project(self) -> Path:
         """
-        The directory relative lines resolve against, which is the one holding `.markers`. A
-        Trail without a directory uses the working directory.
+        The directory that relative lines resolve against. It holds `.markers`. A Trail without a
+        directory uses the working directory.
 
         >>> self.project
         PosixPath('/tmp/tmpp_bl05lq')
@@ -671,24 +707,24 @@ class Markers(
     def _changed(self) -> None:
         """
         Write the lines through to the file, bring `trail.dirs` in line with them, and reconcile
-        the watchdog with the Dirs. Every change calls it.
+        the watchdog's session with the Dirs. Every change calls it.
         """
-        self.text.replace(self.data)
+        self.txt.replace(self.data)
         trail = self._trail
         trail.dirs.refresh()
-        trail.watchdog.reconcile()
+        trail.watchdog.session.reconcile()
 
     def _numbered(self) -> Iterator[tuple[str, str]]:
         """
         Yields each line with where it is written, as 'path:number'. The lines of a Trail
         without a file are numbered by position.
         """
-        path = self.text.path
+        path = self.txt.path
         if (
             path is not None
             and path.exists()
         ):
-            for number, line in self.text.numbered():
+            for number, line in self.txt.numbered():
                 yield f'{path}:{number}', line
             return
         for number, line in enumerate(self.data, start=1):
@@ -697,10 +733,12 @@ class Markers(
     @property
     def warnings(self) -> list[str]:
         """
-        Returns the problems with the lines as written. A line that does not parse is reported.
-        So is a directory written without its trailing '/', and a directory marker that names
-        a directory asset. When `.markers` was imported, each anchored line is reported too,
-        since it resolves against this project.
+        Returns the problems with the lines as written. These are reported:
+        - A line that does not parse.
+        - A directory written without its trailing '/'.
+        - A directory marker that names a dirasset or a directory inside one.
+        - Each line with a directory part other than './', if `.markers` was imported. It resolves
+          against this project.
 
         >>> self.warnings
         ["/tmp/tmpp_bl05lq/.markers:4: Not a marker: '!'"]
@@ -724,9 +762,9 @@ class Markers(
                 and not pattern
             ):
                 lineage = (base, *base.parents)
-                names_asset = base in tracked
-                names_asset |= any(
-                    container(path)
+                names_asset = any(
+                    path in tracked
+                    or DirAsset.is_match(path)
                     for path in lineage
                 )
             if names_asset:
@@ -749,4 +787,4 @@ class Markers(
 
     def __repr__(self) -> str:
         """Lists the lines in file order."""
-        return lines_repr(type(self).__name__, self.data)
+        return fmt.lines(type(self).__name__, self.data)

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
+from dataclasses import fields
 from typing import TYPE_CHECKING, Any, Protocol, overload
 
+from trail import fmt
 from trail.node import Node
 from trail.select import Select
-from trail.util import items_repr
 
 if TYPE_CHECKING:
     from trail.trail import Trail
@@ -16,14 +17,43 @@ class Record(Protocol):
     id: str
 
 
+def attributes(types: Sequence[type]) -> tuple[str, ...]:
+    """
+    Returns the names a record of these classes can be selected on, in the order the classes
+    define them. These are the dataclass fields, `cls`, and the properties a class names in
+    `selectable`.
+
+    >>> trail: Trail
+    >>> attributes(trail.dirs.types)
+    ('id', 'path', 'root', 'scopes', 'cls', 'name', 'directory')
+    """
+    names = [
+        field.name
+        for type_ in types
+        for field in fields(type_)
+        if not field.name.startswith('_')
+    ]
+    extra = [
+        name
+        for type_ in types
+        for name in getattr(type_, 'selectable', ())
+    ]
+    # `cls` is not an attribute; Select.held reads it as the record's class
+    ordered = dict.fromkeys([*names, 'cls', *extra])
+    return tuple(ordered)
+
+
 class Collection[K, V: Record](Node):
     """
-    What a Trail keeps, held by the id of each record and iterated as the records themselves.
+    The records of a Trail, such as its events, its assets or its Dirs, held by id.
 
-    `data` maps every id to its record and `ids` holds the order they were recorded in. The
-    mapping is how a collection is stored rather than what it is, so iteration, membership and
-    length speak of records rather than of keys, and `K` is whatever a record may be addressed
-    by: its id alone for the log, a path as well for the assets.
+    - `data` maps each id to its record.
+    - `ids` holds the ids in the order they were recorded.
+    - `K` is what a record can be looked up by: its id for events, its id or its path for assets
+      and Dirs.
+    - `V` is the class of the records.
+
+    Iteration, membership and length count records, not keys.
     """
 
     _parent: Trail
@@ -32,6 +62,14 @@ class Collection[K, V: Record](Node):
         Node.__init__(self, parent)
         self.data: dict[str, V] = {}
         self.ids: list[str] = []
+
+    @property
+    def types(self) -> Sequence[type[V]]:
+        """
+        Returns the classes of the records the collection can hold. A listing in the console
+        offers their fields as `field=` completions. See `attributes`.
+        """
+        raise NotImplementedError
 
     @property
     def select(self) -> Select[Collection[K, V], Any]:
@@ -98,4 +136,4 @@ class Collection[K, V: Record](Node):
         self.ids.clear()
 
     def __repr__(self) -> str:
-        return items_repr(type(self).__name__, self)
+        return fmt.items(type(self).__name__, self)

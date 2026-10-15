@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import date
 from functools import cached_property
+from typing import Final
 
 from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
 from prompt_toolkit.shortcuts import print_formatted_text
@@ -11,12 +12,14 @@ from trail.cli.node import Node
 from trail.cli.theme import PROMPT, STYLE
 from trail.event import Event
 
+# what `extend` replaces in a row's text: a newline with a space, a tab with four spaces
+FLAT: Final = str.maketrans({"\n": " ", "\t": "    "})
+
 
 class Feed(Node):
     """
-    The console's scrollback. Rows arrive already rendered and are printed once. They are
-    never redrawn. Only the last `limit` rows are kept in `rows`, so memory stays bounded in
-    long sessions.
+    The console's scrollback. Rows arrive already rendered, are printed once and are never redrawn.
+    Only the last `limit` rows are kept in `rows`, so memory stays bounded.
     """
 
     # rows retained before the head of the feed is discarded
@@ -39,8 +42,8 @@ class Feed(Node):
         """
         Print `events`, with a date row whenever the day changes.
 
-        `start` is the position of the first event in the log. Records are numbered from it,
-        so each one shows its position in the log rather than in this batch.
+        `start` is the position of the first event in the log. Records are numbered from it, so each
+        shows its position in the log, not in this batch.
 
         Thursday 01 October 2026
         0. AddAssetEvent
@@ -57,19 +60,13 @@ class Feed(Node):
 
     def extend(self, rows: Iterable[StyleAndTextTuples]) -> None:
         """
-        Print `rows` and keep them, dropping the oldest rows past `limit`. Newlines inside a
-        row are replaced with spaces so each row stays on one line. Tabs are replaced with four
-        spaces.
+        Print `rows` and keep them, dropping the oldest past `limit`. Newlines in a row become
+        spaces, so each row stays on one line. Tabs become four spaces.
         """
         appended = []
         for row in rows:
             flattened = [
-                (
-                    style,
-                    text
-                    .replace("\n", " ")
-                    .replace("\t", "    "),
-                )
+                (style, text.translate(FLAT))
                 for style, text, *_ in row
             ]
             appended.append(flattened)

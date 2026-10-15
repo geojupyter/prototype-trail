@@ -29,6 +29,7 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.layout.processors import BeforeInput
 
+from trail import fmt
 from trail.cli.console import Console
 from trail.cli.render import Renderer
 from trail.cli.scopes import Paths
@@ -39,7 +40,6 @@ from trail.markers import (
     kind,
 )
 from trail.trail import Trail
-from trail.util import plural
 
 __all__ = [
     "Paths",
@@ -94,13 +94,14 @@ def tabbing() -> KeyBindings:
 
 class Picker:
     """
-    Lets the user choose the markers file a new `.markers` starts from. The bundled files are
-    listed on the left, with a preview of the selected one on the right. A typed path loads a
-    markers file of the user's own.
+    Lets the user choose the markers file that a new `.markers` starts from. The bundled files are
+    listed on the left, with a preview of the selected one on the right. Typing a path previews the
+    user's own markers file instead. A file longer than the preview is cut off, since the editor
+    that follows shows every line.
 
-    <UP> and <DOWN> move through the list. A file longer than the preview is cut off, since
-    the editor that follows shows every line. Typing a path previews that file instead. <ENTER>
-    chooses the previewed file, and <ESCAPE> chooses none.
+    - <UP> and <DOWN> move through the list.
+    - <ENTER> chooses the previewed file.
+    - <ESCAPE> chooses none.
     """
 
     # terminal rows left to the question and its hints above the picker
@@ -252,8 +253,8 @@ class Picker:
 
     def _preview(self) -> StyleAndTextTuples:
         """
-        Returns the top of the preview, as much as fits. A file that runs on past it ends in a
-        count of the lines cut off.
+        Returns as much of the top of the file as fits. A longer file ends with a count of the lines
+        cut off.
         """
         rows = self._content()
         viewport = self.viewport
@@ -308,13 +309,11 @@ class Picker:
         Returns the picker layout. The list and the preview sit side by side, with the path
         input and any error below them. The completion menu floats at the cursor.
         """
-        width = max(
-            (
-                len(label)
-                for label, _ in self.options
-            ),
-            default=0,
-        )
+        labels = [
+            len(label)
+            for label, _ in self.options
+        ]
+        width = max(labels, default=0)
         # an inline application is handed every row below the cursor; neither of these may
         # take more than its content, or the picker fills the terminal
         listing = Window(
@@ -331,13 +330,8 @@ class Picker:
         )
         body = VSplit([listing, preview])
         prompt = BeforeInput("  path: ", style="class:info")
-        field = Window(
-            BufferControl(
-                self.buffer,
-                input_processors=[prompt],
-            ),
-            height=1,
-        )
+        control = BufferControl(self.buffer, input_processors=[prompt])
+        field = Window(control, height=1)
         message = Window(
             FormattedTextControl(lambda: [("class:error", f"  {self.error}")]),
             height=1,
@@ -451,12 +445,12 @@ def startup(trail: Trail) -> None:
 
 def init(root: Path) -> Trail:
     """
-    Walk the user through starting a Trail, or re-initializing one. Relative paths are read
-    from `root`. Nothing is written until every question is answered, so an interrupt leaves
-    the project untouched.
+    Walk the user through starting a Trail, or re-initializing one. Relative paths are read from
+    `root`. Nothing is written until every question is answered, so an interrupt leaves the project
+    untouched.
 
-    Re-initializing rewrites `.markers` and tracks what the new lines indicate. The log is
-    kept, and so is everything already tracked.
+    Re-initializing rewrites `.markers` and tracks what the new lines pick up. The log and
+    everything already tracked are kept.
 
     Trail started in ~/project 🌲
       markers: ./ *.csv *.txt *.json
@@ -527,8 +521,8 @@ def init(root: Path) -> Trail:
 
     say(f"Trail started in {Renderer.home(home)} 🌲", "bold")
     say(f"  markers: {' '.join(trail.markers) or 'none'}", "class:info")
-    assets = plural(len(trail.assets), "asset")
-    dirs = plural(len(trail.dirs), "dir")
+    assets = fmt.plural(len(trail.assets), "asset")
+    dirs = fmt.plural(len(trail.dirs), "dir")
     say(f"  tracked: {assets} in {dirs}", "class:info")
     for warning in trail.markers.warnings:
         say(f"  {warning}", "class:error")

@@ -19,10 +19,9 @@ PADDING = " " * 52
 
 class TestPaste:
     """
-    What the command bar makes of a paste. A line copied whole out of a terminal carries the
-    padding that filled the terminal's width, and often the break that ended it; the bar is a
-    single row that scrolls to follow the cursor, so either one leaves it looking empty while it
-    holds what was pasted.
+    What the command bar does with a paste. A line copied whole from a terminal carries the padding
+    that filled the terminal's width, and often the line break. The bar is a single row that scrolls
+    to follow the cursor, so either one makes it look empty even though it holds the paste.
     """
 
     def test_a_padded_line_loses_only_its_padding(self) -> None:
@@ -37,7 +36,7 @@ class TestPaste:
         assert Console.pasted("\n\n") == ""
 
     def test_a_path_holding_a_space_survives_the_paste(self) -> None:
-        """Only the ends of a line go, since the space between two words of a name is the name."""
+        """Only the ends of a line are stripped. A space inside a name is part of the name."""
         assert Console.pasted("/tmp/two  spaces.csv   ") == "/tmp/two  spaces.csv"
 
     def test_the_bar_holds_what_a_double_click_pasted(self) -> None:
@@ -67,6 +66,7 @@ class TestPaste:
                 async with asyncio.timeout(20):
                     await console.application.run_async()
                     await looking
+                await console._trail.watchdog.session.stop()
 
         asyncio.run(run())
 

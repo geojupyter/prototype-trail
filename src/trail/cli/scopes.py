@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
-from typing import Final
 
 from prompt_toolkit.completion import (
     CompleteEvent,
@@ -13,36 +12,15 @@ from prompt_toolkit.completion import (
 )
 from prompt_toolkit.document import Document
 
-from trail.markers import MAGIC, canonical, kind
-
-# offered as `*.ext` alongside the lines already in `.markers`
-COMMON: Final[tuple[str, ...]] = (
-    "csv",
-    "tsv",
-    "txt",
-    "json",
-    "geojson",
-    "gpkg",
-    "shp",
-    "parquet",
-    "feather",
-    "tif",
-    "tiff",
-    "nc",
-    "h5",
-    "zarr",
-    "xlsx",
-    "pkl",
-    "npy",
-    "png",
-    "jpg",
-)
+from trail.asset import DirAsset
+from trail.markers import MAGIC, canonical, extensions, kind
 
 
 class Paths(PathCompleter):
     """
     A PathCompleter that adds a trailing slash to directories, like a shell does. Without it,
-    the next thing typed runs into the directory name.
+    the next thing typed runs into the directory name. A dirasset gets no slash, since its line
+    names it without one.
     """
 
     def get_completions(
@@ -50,16 +28,23 @@ class Paths(PathCompleter):
         document: Document,
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
-        """Yields the path completions, with a trailing slash on each directory."""
+        """Yields the path completions, with a trailing slash on each directory but a dirasset."""
         for completion in super().get_completions(document, complete_event):
-            if completion.display_text.endswith("/"):
+            name = completion.display_text
+            if not name.endswith("/"):
+                yield completion
+            elif DirAsset.is_match(Path(name.rstrip("/"))):
+                yield Completion(
+                    completion.text,
+                    completion.start_position,
+                    display=name.rstrip("/"),
+                )
+            else:
                 yield Completion(
                     f"{completion.text}/",
                     completion.start_position,
                     display=completion.display,
                 )
-            else:
-                yield completion
 
 
 class Scope(Completer):
@@ -145,8 +130,8 @@ class ScopePaths(Scope):
 
 class Extensions(Scope):
     """
-    Completes a word that is not a path to `*.ext`, for each extension in `COMMON` that starts
-    like it. A leading '!' is kept.
+    Completes a word that is not a path to `*.ext`, for each extension that a bundled markers file
+    names and that starts like it. See `extensions`. A leading '!' is kept.
 
         mark !*.t<TAB>    !*.tsv  !*.txt  !*.tif  !*.tiff    root scope · exclude
     """
@@ -156,7 +141,7 @@ class Extensions(Scope):
         document: Document,
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
-        """Yields `*.ext` for each common extension the word is a start of."""
+        """Yields `*.ext` for each bundled extension the word is a start of."""
         word = self.word(document)
         negated = word.startswith("!")
         body = word.removeprefix("!")
@@ -175,7 +160,7 @@ class Extensions(Scope):
             prefix = "!"
         else:
             prefix = ""
-        for extension in COMMON:
+        for extension in extensions():
             if extension.startswith(stem):
                 line = f"{prefix}*.{extension}"
                 yield Completion(
@@ -228,17 +213,15 @@ def completer(
         cwd: Callable[[], Path],
 ) -> Completer:
     """
-    Returns the completer for lines of `.markers`. It completes paths, the common extensions
+    Returns the completer for lines of `.markers`. It completes paths, the bundled extensions
     as `*.ext`, and the lines in `rows`. Each candidate shows its kind as its `display_meta`.
 
         mark cs<TAB>      *.csv    root scope
         mark ./da<TAB>    data/    root
     """
-    return merge_completers(
-        [
-            ScopePaths(project, cwd),
-            Extensions(project, cwd),
-            Rows(rows, project, cwd),
-        ],
-        deduplicate=True,
-    )
+    completers = [
+        ScopePaths(project, cwd),
+        Extensions(project, cwd),
+        Rows(rows, project, cwd),
+    ]
+    return merge_completers(completers, deduplicate=True)

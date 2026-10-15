@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from prompt_toolkit.formatted_text import StyleAndTextTuples
 
+from trail import fmt
 from trail.cli.node import Node
 from trail.cli.theme import EMBLEM_GLYPHS, INDENT, VERB_STYLES
 from trail.event import (
@@ -18,7 +19,6 @@ from trail.event import (
     RemoveDirEvent,
     WatchdogEvent,
 )
-from trail.util import Repr, bare_repr
 
 if TYPE_CHECKING:
     from trail.cli.console import Console
@@ -27,8 +27,8 @@ if TYPE_CHECKING:
 class Renderer(Node):
     """
     Turns the Trail's events, assets and Dirs into feed rows. Wording choices such as an event's
-    verb are presentation only. They live here so a later provenance export can word the same
-    events differently. The Renderer holds no state. The feed tracks the current date itself.
+    verb are presentation only, so a later provenance export can word the same events differently.
+    The Renderer holds no state. The feed tracks the current date itself.
     """
 
     _parent: Console
@@ -54,13 +54,12 @@ class Renderer(Node):
 
     def record(
         self,
-        item: Repr,
+        item: fmt.Repr,
         position: int,
     ) -> list[StyleAndTextTuples]:
         """
-        Returns the rows for an event or asset, which are a heading and then one line per
-        field. Fields come from the item's `_repr_items`, so a new field on the class shows up
-        here automatically.
+        Returns the rows for an event or asset: a heading, then one line per field. Fields come from
+        the item's `_repr_items`, so a new field shows up here automatically.
 
         0. Asset
             id: 9b0c596b228d425bbefdce16a82fe3dd
@@ -84,12 +83,11 @@ class Renderer(Node):
 
     def heading(
         self,
-        item: Repr,
+        item: fmt.Repr,
         position: int,
     ) -> StyleAndTextTuples:
         """
-        Returns the record's position and class name. The class name is coloured by the
-        event's verb, so a deletion and a creation look different at a glance.
+        Returns the record's position and class name. The class name is coloured by the event's verb.
 
         4. WatchdogEvent
         """
@@ -99,7 +97,7 @@ class Renderer(Node):
         ]
         return out
 
-    def style(self, item: Repr) -> str:
+    def style(self, item: fmt.Repr) -> str:
         """
         Returns the style class for a heading. Events are coloured by their verb, or
         `class:event` if the verb has no style. Assets use `class:kind`.
@@ -108,7 +106,7 @@ class Renderer(Node):
             return VERB_STYLES.get(self.verb(item), "class:event")
         return "class:kind"
 
-    def parameters(self, item: Repr) -> Iterator[tuple[str, str]]:
+    def parameters(self, item: fmt.Repr) -> Iterator[tuple[str, str]]:
         """
         Yields each field's name and display value. For an event, the id of the asset or the
         Dir it was recorded against comes last.
@@ -120,7 +118,7 @@ class Renderer(Node):
         entry = getattr(item, "entry", None)
         if entry is None:
             return
-        yield "entry", bare_repr(entry.id)
+        yield "entry", fmt.bare(entry.id)
 
     def parameter(
         self,
@@ -139,16 +137,21 @@ class Renderer(Node):
     ) -> str:
         """
         Returns a field value as text. Path fields go through `display`. Other values use
-        `bare_repr`.
+        `fmt.bare`.
         """
         if name.endswith("path"):
             value = self.display(value)
-        return bare_repr(value)
+        return fmt.bare(value)
 
     def emblem(self) -> list[str]:
         """
-        Returns `emblem_length` glyphs picked by the Trail id. The same Trail always gets the
-        same glyphs in the same order. Two Trails can share an emblem, but it is unlikely.
+        Returns `emblem_length` glyphs chosen by the Trail id. A Trail always gets the same glyphs
+        in the same order. Two Trails can share an emblem, but this is unlikely.
+
+        >>> self._trail.id
+        '1ff756ca11b54b3994c7b26bbda99c0a'
+        >>> self.emblem()
+        ['🍃', '🍄', '🌲']
         """
         # the builtin hash is salted per process, so it would pick new glyphs every session
         digest = hashlib.sha256(self._trail.id.encode()).digest()
@@ -180,16 +183,23 @@ class Renderer(Node):
     def header(self) -> StyleAndTextTuples:
         """
         Returns the header row above the command bar. It shows the Trail id, the project root,
-        `(nodir)` when nothing is saved to disk, the asset, Dir and event counts, and whether the
-        watchdog is running. It is redrawn on every refresh, so the counts stay current.
+        `(nodir)` if nothing is saved to disk, the asset, Dir and event counts, the open dirasset
+        accesses if there are any, and whether the watchdog is running. It is redrawn on every
+        refresh.
 
          trail #1ff756ca11b54b3994c7b26bbda99c0a  ~/project  assets 2  dirs 1  events 14  watching
         """
         trail = self._trail
-        if trail.watchdog.running:
+        session = trail.watchdog.session
+        if session.is_active:
             state = "watching"
         else:
             state = "idle"
+        accesses = ""
+        if session:
+            count = session.accesses.open
+            if count:
+                accesses = f"  accesses {count}"
         row: StyleAndTextTuples = [
             ("class:header.name", " trail "),
             ("class:header.id", f"#{trail.id}  "),
@@ -201,6 +211,7 @@ class Renderer(Node):
             f"  assets {len(trail.assets)}"
             f"  dirs {len(trail.dirs)}"
             f"  events {len(trail.events)}"
+            f"{accesses}"
             f"  {state}"
         )
         row.append(("class:header.counts", counts))
@@ -232,11 +243,13 @@ class Renderer(Node):
     @staticmethod
     def verb(event: Event) -> str:
         """
-        Returns the verb for an event, which sets its heading colour. AddAssetEvent is
-        `tracked`, or `discovered` when a line of `.markers` picked the asset up.
-        RemoveAssetEvent is `offtrailed`. AddDirEvent is `watched` and RemoveDirEvent is
-        `unwatched`. A WatchdogEvent uses its `event_type`, except a synthetic creation, which
-        is `discovered`. Any other event is named after its class.
+        Returns the verb for an event. The verb sets the heading colour.
+        - AddAssetEvent is `tracked`, or `discovered` if a line of `.markers` picked the asset up.
+        - RemoveAssetEvent is `offtrailed`.
+        - AddDirEvent is `watched`.
+        - RemoveDirEvent is `unwatched`.
+        - WatchdogEvent uses its `event_type`. This includes an access to a dirasset.
+        - Any other event is named after its class.
         """
         if isinstance(event, AddAssetEvent):
             if event.rule is not None:
@@ -249,21 +262,14 @@ class Renderer(Node):
         if isinstance(event, RemoveDirEvent):
             return "unwatched"
         if isinstance(event, WatchdogEvent):
-            # a synthetic creation is a resource the walk of a new directory turned up
-            if event.is_synthetic and event.event_type == "created":
-                return "discovered"
-            return event.event_type or "event"
-        return type(event).__name__.removesuffix("Event").lower()
-
-    @staticmethod
-    def directory(event: Event) -> bool:
-        """Returns True if the event is about a directory, a Dir or a directory asset."""
-        if getattr(event, "is_directory", False):
-            return True
-        return (
-            event.entry is not None
-            and event.entry.is_directory
+            out = event.event_type or "event"
+            return out
+        out = (
+            type(event).__name__
+            .removesuffix("Event")
+            .lower()
         )
+        return out
 
     @staticmethod
     def home(path: Path) -> str:

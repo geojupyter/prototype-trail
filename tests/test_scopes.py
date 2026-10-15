@@ -6,8 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 import pytest
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
 
 from trail import Trail
+from trail.cli.scopes import ScopePaths
 from trail.dir import build, match
 from trail.markers import canonical
 
@@ -168,6 +171,20 @@ class TestCanonical:
             assert canonical('.', project, project) == './'
             assert canonical(str(project), project, project) == './'
 
+    def test_a_dirasset_gets_no_slash(self) -> None:
+        with self.project() as (project, _):
+            (project / 'cube.zarr').mkdir()
+            (project / 'data' / 'scene.SAFE').mkdir()
+            assert canonical('cube.zarr', project, project) == './cube.zarr'
+            assert canonical('data/scene.SAFE', project, project) == 'data/scene.SAFE'
+            assert canonical('../cube.zarr', project, project / 'data') == './cube.zarr'
+
+    def test_a_dotted_folder_keeps_its_slash(self) -> None:
+        with self.project() as (project, _):
+            for name in ('results.v2', 'python3.12', '2026.10'):
+                (project / name).mkdir()
+                assert canonical(name, project, project) == f'{name}/'
+
     def test_a_leading_dot_slash_goes_once_the_rest_has_a_slash(self) -> None:
         with self.project() as (project, _):
             assert canonical('./data/raw/*.tif', project, project) == 'data/raw/*.tif'
@@ -206,6 +223,24 @@ class TestCanonical:
             for text in ('', '!', '**/'):
                 with pytest.raises(ValueError):
                     canonical(text, project, project)
+
+
+class TestCompletion:
+    def test_a_dirasset_completes_without_a_slash(self) -> None:
+        with TemporaryDirectory() as temporary:
+            project = Path(temporary).resolve()
+            (project / 'cube.zarr').mkdir()
+            (project / 'data').mkdir()
+            completer = ScopePaths(lambda: project, lambda: project)
+            completions = {
+                completion.display_text: completion.text
+                for text in ('./cu', './da')
+                for completion in completer.get_completions(
+                    Document(text, len(text)),
+                    CompleteEvent(),
+                )
+            }
+            assert completions == {'cube.zarr': 'be.zarr', 'data/': 'ta/'}
 
 
 class TestReprs:
@@ -262,7 +297,7 @@ class TestReprs:
 
 
 if __name__ == "__main__":
-    for suite in (TestMatching(), TestRoots(), TestCanonical(), TestReprs()):
+    for suite in (TestMatching(), TestRoots(), TestCanonical(), TestCompletion(), TestReprs()):
         for name in dir(suite):
             if name.startswith('test_'):
                 getattr(suite, name)()

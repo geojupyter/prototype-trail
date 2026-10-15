@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     from trail.asset import Asset, Assets
     from trail.event import Event, Events
     from trail.trail import Trail
-    from trail.watchdog import Handler, Watchdog
+    from trail.watchdog import Watchdog
 
 
 class Node:
@@ -86,15 +86,6 @@ class Node:
         if isinstance(parent, Watchdog):
             return parent
         return parent._watchdog
-
-    @cached_property
-    def _handler(self) -> Handler:
-        from trail.watchdog import Handler
-
-        parent = self._parent
-        if isinstance(parent, Handler):
-            return parent
-        return parent._handler
 
     @staticmethod
     def _setnested(

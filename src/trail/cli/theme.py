@@ -9,39 +9,38 @@ PROMPT: Final = "> "
 INDENT: Final = "    "
 
 # the style classes for everything the cli prints or draws
-STYLE: Final = Style.from_dict(
-    {
-        "welcome": "bold",
-        "header": "bg:ansibrightblack ansiwhite",
-        "header.name": "bold",
-        "header.id": "ansibrightcyan",
-        "header.mode": "ansiyellow",
-        "header.counts": "ansiwhite",
-        "position": "ansibrightblack",
-        "day": "ansibrightblack bold",
-        "parameter": "ansibrightblack",
-        "id": "ansibrightblack",
-        "kind": "ansiblue",
-        "missing": "ansired",
-        "echo": "bold",
-        "echo.prompt": "ansicyan bold",
-        "info": "ansibrightblack",
-        "error": "ansired bold",
-        "event": "ansiblue",
-        "event.tracked": "ansigreen bold",
-        "event.offtrailed": "ansired bold",
-        "event.watched": "ansigreen bold",
-        "event.unwatched": "ansired bold",
-        "event.created": "ansigreen",
-        "event.discovered": "ansigreen",
-        "event.modified": "ansiyellow",
-        "event.deleted": "ansired",
-        "event.moved": "ansicyan",
-        "event.opened": "ansibrightblack",
-        "text-area.prompt": "ansicyan bold",
-        "selected-option": "ansicyan bold",
-    }
-)
+CLASSES: Final[dict[str, str]] = {
+    "welcome": "bold",
+    "header": "bg:ansibrightblack ansiwhite",
+    "header.name": "bold",
+    "header.id": "ansibrightcyan",
+    "header.mode": "ansiyellow",
+    "header.counts": "ansiwhite",
+    "position": "ansibrightblack",
+    "day": "ansibrightblack bold",
+    "parameter": "ansibrightblack",
+    "id": "ansibrightblack",
+    "kind": "ansiblue",
+    "missing": "ansired",
+    "echo": "bold",
+    "echo.prompt": "ansicyan bold",
+    "info": "ansibrightblack",
+    "error": "ansired bold",
+    "event": "ansiblue",
+    "event.tracked": "ansigreen bold",
+    "event.offtrailed": "ansired bold",
+    "event.watched": "ansigreen bold",
+    "event.unwatched": "ansired bold",
+    "event.created": "ansigreen",
+    "event.discovered": "ansigreen",
+    "event.modified": "ansiyellow",
+    "event.deleted": "ansired",
+    "event.moved": "ansicyan",
+    "event.opened": "ansibrightblack",
+    "text-area.prompt": "ansicyan bold",
+    "selected-option": "ansicyan bold",
+}
+STYLE: Final = Style.from_dict(CLASSES)
 
 # the style of a record heading, keyed by the verb from `Renderer.verb`
 VERB_STYLES: Final[dict[str, str]] = {
