@@ -59,17 +59,17 @@ and §14 lists what still has to be checked.
 
 ## Status
 
-- [ ] Commit 0: hygiene (prerequisite)
-- [ ] Commit 1: `*.safe` in the geospatial preset
-- [ ] Commit 2: gap 1, marking one dirasset
-- [ ] Commit 3: `DirAsset` and `children`
-- [ ] Commit 4: gap 4, what belongs to a dirasset
-- [ ] Commit 5: `Watchdog.session` and the hand-off
-- [ ] Commit 6: recursive watches, and gap 2
-- [ ] Commit 7: `DirectoryAccessEvent`
-- [ ] Commit 8: accesses
-- [ ] Commit 9: dirasset lifecycle and moves
-- [ ] Commit 10: console
+- [x] Commit 0: hygiene (prerequisite)
+- [x] Commit 1: `*.safe` in the geospatial preset
+- [x] Commit 2: gap 1, marking one dirasset
+- [x] Commit 3: `DirAsset` and `children`
+- [x] Commit 4: gap 4, what belongs to a dirasset
+- [x] Commit 5: `Watchdog.session` and the hand-off
+- [x] Commit 6: recursive watches, and gap 2
+- [x] Commit 7: `DirectoryAccessEvent`
+- [x] Commit 8: accesses
+- [x] Commit 9: dirasset lifecycle and moves
+- [x] Commit 10: console
 - [ ] Commit 11 (optional): `select` on counts
 
 ## 1. Vocabulary
@@ -80,7 +80,7 @@ and §14 lists what still has to be checked.
 | children | the pattern of file names that are part of a dirasset. A file inside a dirasset whose name does not match it, such as a temporary or lock file, is not part of it | `DirAsset.children` |
 | access | one stretch of activity on a dirasset, from its first event until it goes quiet for `idle_gap`. Concurrent readers and writers share it | `Access`, open in `trail.watchdog.session.accesses`, logged as a `DirectoryAccessEvent` |
 | session | one stretch of watching, from `Watchdog.start` to `Watchdog.stop`. It owns the observer, its watches, the queue, the open accesses and the consumer | `trail.watchdog.session` |
-| seal | close an open access and queue it, so the loop logs it once | `Accesses.seal` |
+| close | close an open access and queue it, so the loop logs it once as `Access.to_event()` | `Accesses.close` |
 
 ## 2. Answers to the comments on the 10-8 plan
 
@@ -1382,3 +1382,135 @@ cannot hold a dot (`select.py:19-22`).
 | `moments` | removed. Any datetime is written in ISO format |
 | fingerprint | unchanged |
 | migrations | none |
+
+## Deviations
+
+Calls made while implementing the plan, where it was ambiguous, wrong or overtaken by an
+instruction. Each is recorded in the commit that makes it.
+
+### Commit 0
+
+- **`markers/general.txt` stays untracked,** as instructed, and `src/a/` stays out. HEAD's tests
+  still read it (`test_init.py:98`, and the `markers='general'` Trails in `test_trail.py`), so
+  they pass here but fail on a clean checkout, and so will the new CI job, until it is committed
+  or those tests stop naming it.
+- **The tests that wait for an `opened` event skip off Linux** (`needs_opens` in
+  `test_trail.py`). §10 asks this of new tests only, but the CI job now runs macOS and Windows,
+  where no watchdog backend reports opens, so the old ones would fail there for the same reason.
+- **CI installs with `pip install -e . --group dev`.** `uv.lock` is kept out of git, so the job
+  does not use uv. The job has never run, since nothing is pushed.
+
+### Commit 2
+
+- **A `/` typed after a dirasset is kept.** `canonical_path` only stops adding the `/` itself, so
+  `mark cube.zarr/` still writes a root marker, which `.markers` warnings then report as naming a
+  directory asset. Typing the `/` is a choice the completer no longer suggests, and dropping it
+  silently would rewrite what was typed.
+
+### Commit 4
+
+- **A directory whose suffix makes it a dirasset holds its children before it is tracked.**
+  `Assets.child(path)` returns the nearest dirasset above a path when the path's name matches its
+  children, and that dirasset may be an untracked `.zarr`, `.gdb`, `.safe` or `.n5`. So
+  `track cube.zarr/zarr.json` is refused whether or not `cube.zarr` is tracked, and a scan never
+  tracks a chunk of an untracked store. Scans already treat these suffixes as dirassets in
+  `walk`, so this keeps the two in line. The nearest dirasset decides, as in §5.2 step 3.
+- **Absorbed assets go through `Trail.offtrail`.** Their paths are then offtrailed, so offtrailing
+  the dirasset later does not bring them back through `.markers`, as for any offtrailed path.
+
+### Commit 5
+
+- **`settle` is 0 for the whole suite,** through an autouse fixture in `tests/conftest.py`,
+  rather than set by each new integration test (§10). The old tests stop a watchdog right after
+  the events they waited for, so each would otherwise wait the full 0.55 s, which took the suite
+  from 7 s to 20 s. A test that moves a dirasset between watches sets `settle` back itself.
+- **The `settle` wait in `stop()` is bounded** to `settle + 1` seconds after `stop()` begins.
+  §5.6 waits until `settle` after the last arrival, which a steady stream of events would never
+  reach.
+- **The consumer skips `debounce` once the session is closing.** `stop()` has already queued
+  everything watchdog read when STOP wakes the consumer, so the wait only added 0.1 s to every
+  `stop()`.
+
+### Commit 6
+
+- **`hidden` holds every directory the session would watch** (Dirs, dirassets and the parents of
+  Dirs and assets) that sits at or below a hidden directory, not only the Dirs (§5.2). A file
+  tracked by hand inside `.venv` has no Dir there, and its parent's own watch used to give it its
+  events. The rule counts hidden directories only, so zarr v2's `.zarray` and `.zattrs` pass.
+- **A move is dropped only when both its ends are hidden.** A folder built in `.staging` and
+  moved into view is still scanned, as `test_a_root_takes_in_only_marked_files` expects.
+- **`watch`, `unwatch` and `invalidate` go with `extend`.** `Watches` places and removes each
+  watch, and `_directory` calls `reconcile()` after a deletion, creation or move.
+- **`_track` reconciles after anything new it tracked,** not only a new dirasset, and
+  `Trail.track` no longer reconciles itself. A file tracked outside every Dir still gets its
+  parent watched, and tracking a directory reconciles once.
+- **`covers()` is False for a directory that does not exist,** so the old path of a renamed
+  folder is not reported as watched through the project's recursive watch.
+
+### Commit 8
+
+- **"Just use to_event() instead of seal() neologism."** `Accesses.seal` is `Accesses.close`,
+  which closes an open access and queues it, and `Access.to_event(dirasset)` builds the
+  `DirectoryAccessEvent` that `Watchdog.record` logs. The vocabulary row says so, and "seal" in
+  the rest of this plan reads as "close".
+- **`Session.take(asset=None)` and `Accesses.drop()` are new names.** `take` closes the open
+  access of one dirasset, or of every one, and takes its closed accesses out of the queue.
+  `flush` logs what it takes, and the consumer's `finally` and the exit hook log it with one
+  `Events.extend`. `drop` empties both for `Events.clear`.
+- **`Session.idle_gap` reads `Watchdog.idle_gap`.** A Trail opened inside a running loop starts
+  its session in its constructor, before a test can set the gap.
+- **`del watchdog.session` logs the accesses the session still holds,** after halting it. A
+  session left by an `asyncio.run` keeps counting after its consumer is cancelled, until the next
+  `ensure()` replaces it, and those accesses were otherwise lost. A session inherited across a
+  fork is only dropped.
+- **Moves across a dirasset's root are counted too,** which §5.3 leaves open. A folder moved into
+  or out of a dirasset counts once as `moved`, and the end outside is queued. A file moved in
+  from outside every dirasset onto a child name counts as `modified` and is queued as well, so a
+  tracked file follows it (§15). A rename onto a child name from inside a dirasset is not queued,
+  so no chunk write reaches the loop.
+- **The handler reads watchdog's paths as `str`,** without `os.fsdecode`, since every watch is
+  scheduled with a `str` path. Its walks use `str.rfind` and `str.find` instead of
+  `os.path.dirname`. Measured here: 2.0 µs per counted event and 1.8 µs per queued event on top of
+  watchdog's own, down from 6.5 µs with `os.path`, against the 3 µs target of §13.
+- **An access is logged before the deletion or move that ends it only from commit 9 on.** Commit 8
+  removes the per-batch fold, and commit 9 closes those accesses in the handler, with the
+  lifecycle tests that check the order.
+
+### Commit 9
+
+- **The handler closes the accesses that a deletion or a move ends, and `_directory` does not
+  flush them.** When the handler sees a directory deleted or moved that is not inside a
+  dirasset, it closes the access of every dirasset at or below it before it queues the event.
+  §5.5 and §8.4 have `_directory` flush them instead, on the loop. That logged
+  `to_zarr(mode='w')` as access, access, deleted, created, measured here: the loop reached the
+  deletion after the handler had already counted the rewrite into a new access, and the flush
+  closed that one too. Closing in the handler puts each access where its last event is, however
+  far behind the loop is. `flush` still runs for an offtrail, and before a dirasset moved
+  between watches is applied, where nothing after the move has been counted.
+- **A dirasset moved between watches may log an access after its `moved`.** watchdog reports
+  each file below the destination as a synthetic creation, and the ones it delivers after the
+  loop has published the new root are counted there (§6.3 counts synthetic creations). Which
+  ones depends on timing, so `test_a_dirasset_moved_between_watches_keeps_its_id` accepts
+  accesses after the move, all at the new path and none with deletions.
+- **That test takes about 1.1 s,** over the 0.4 s of §13, since it waits out watchdog's 0.5 s
+  hold on the deletion at the source.
+- **`DirAsset.track` and `DirAsset.move` take the inode,** so every path that tracks, replays,
+  recreates or moves a dirasset refreshes it without a call of its own.
+
+### Commit 10
+
+- **`test_the_feed_prints_the_accesses_stop_sealed` is `..._stop_closed`,** after the rename in
+  commit 8.
+- **`Accesses.open` is new.** It counts the open accesses for the header, leaving out the empty
+  ones a read of `dirasset.access` makes.
+
+### Still open
+
+- **§14's validation tasks were not run,** since they need other platforms or real datasets: V1
+  (directories under `.venv`, `node_modules` and `.git`, and `max_user_watches` headroom on
+  Ubuntu), V2 (recursive watches on macOS and Windows), V3 (real zarr 2 and 3, gdb and safe
+  traces under a recursive Dir watch), V4 (opens at every depth on real chunk sizes) and V5
+  (compute-bound dask work, to settle `idle_gap`).
+- **The CI job has never run.** Besides `general.txt` (commit 0), the macOS and Windows jobs
+  will show what V2 would have found first.
+- **Commit 11 is skipped,** as it is optional.
