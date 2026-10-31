@@ -393,8 +393,7 @@ concurrent change. Exact attribution would require a saved revision or content i
 ## Status and review order
 
 Implement on a local `codex/eventfeed-fixes` branch from the eventfeed branch checked out when
-implementation starts, currently `prototyping`. Keep one step uncommitted for review at a time,
-run its checks, and tick its item as part of that step. Upstream submission is a later action;
+implementation starts, currently `prototyping`. Upstream submission is a later action;
 the plan branch is reviewed locally.
 
 - [ ] 1. Propagate and emit `local`; extend schema and transaction tests.

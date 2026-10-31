@@ -32,8 +32,7 @@ A second agent then re-checked every finding against the code and corrected seve
 that rests on reading code alone, or on a guess, says so.
 
 The plan assumes that the two refactors in the appendix land first, so it uses their names:
-`trail.entries` in place of `Trail._entry`, and `.checklist` in place of `.markers`. The work goes
-on a branch `jupyter` off `hodczak`, one step at a time (see "Steps").
+`trail.entries` in place of `Trail._entry`, and `.checklist` in place of `.markers`.
 
 ## How it fits together
 
