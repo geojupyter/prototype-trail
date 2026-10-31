@@ -2249,9 +2249,7 @@ The console also changes in smaller ways:
 
 ## Steps
 
-The three refactors in the first appendix come first, on their own branch. Then the plan goes on a
-branch `jupyter` off `hodczak`, one step at a time. Each step leaves the tests passing and is about
-the size of a PR in prototype-trail.
+The three refactors in the first appendix come first.
 
 1. The changes to Trail's core: records with no entry, dotted fields, the class-name guard,
    `.trailignore` and the lock. `.trailignore` also fixes a bug every preset has today: a slow save
