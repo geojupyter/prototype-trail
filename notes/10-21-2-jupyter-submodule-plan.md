@@ -21,8 +21,6 @@ rounds and prototypes:
 - `subscribe` and the probe were run against a real Jupyter Server.
 - No browser was run. All browser behaviour comes from reading plugin.ts and JupyterGIS's code.
 
-The work goes on a branch `jupyter` off `hodczak`, one step at a time (see "Steps").
-
 ## New facts that shape the design
 
 Measured:

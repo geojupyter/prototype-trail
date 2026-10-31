@@ -1,29 +1,29 @@
-# Meeting outline: Trail and the JupyterGIS event feed, with Matt
+# Meeting outline: Trail and the JupyterGIS event feed
 
-This is a one-hour agenda drawn from notes/10-28-2-jupyter-submodule-plan.md. Each item says what
-happens today, what we propose, and what to ask Matt. Matt is away for November, so the meeting
-should also settle who makes each change: Matt before he leaves, or us, with PRs, while he is away.
+This agenda is drawn from notes/10-28-2-jupyter-submodule-plan.md. Each item describes the current
+behavior, proposed changes, and questions for discussion. The meeting should also settle who makes
+each change.
 
 ## Goals
 
 - Agree on the four small feed changes Trail needs most, and who makes each one.
-- Get the answers that only Matt has.
+- Resolve the open questions about feed behavior and scope.
 - Decide who reports the bugs we found in other packages.
 
 ## Agenda
 
-| Time | Topic | Main ask |
-|---|---|---|
-| 0:00 | Where Trail stands | none |
-| 0:05 | Every view reports every change | a `local` field |
-| 0:20 | Naming a map | a `document_id` field |
-| 0:30 | Order and lost messages | `seq` and `time` fields |
-| 0:37 | `closed`, and who acted | `closed` from the last view |
-| 0:44 | Large layer messages | a `layer/v2` |
-| 0:50 | Saves and upstream bugs | who files what |
-| 0:55 | Smaller points and wrap-up | owners for November |
+| Topic | Main ask |
+|---|---|
+| Where Trail stands | none |
+| Every view reports every change | a `local` field |
+| Naming a map | a `document_id` field |
+| Order and lost messages | `seq` and `time` fields |
+| `closed`, and who acted | `closed` from the last view |
+| Large layer messages | a `layer/v2` |
+| Saves and upstream bugs | who files what |
+| Smaller points and wrap-up | owners for each change |
 
-## 1. Where Trail stands (5 min)
+## 1. Where Trail stands
 
 - Trail will listen to each Jupyter server's event feed, and record JupyterGIS actions next to the
   file events it already records.
@@ -32,7 +32,7 @@ should also settle who makes each change: Matt before he leaves, or us, with PRs
 - Trail can work around most of what we found. Four small changes to the emitter would remove most
   of the guesswork: `local`, `document_id`, `seq` with `time`, and `closed` from the last view.
 
-## 2. Every view reports every change (15 min)
+## 2. Every view reports every change
 
 Every open view of a map sends a message for every change, whatever made the change. So Trail
 receives copies from other pages, changes made from Python, and reloads from disk, and they all
@@ -49,12 +49,12 @@ We propose:
 - Trail keeps the local message, and decides what to do with the copies.
 - It only adds a field, so it stays in layer/v1.
 
-We should ask Matt:
+Questions:
 
 - Is a `local` field fine, and who adds it?
 - Should Python changes be in the feed at all?
 
-## 3. Naming a map (10 min)
+## 3. Naming a map
 
 A message names its map only by `document_path`, and that path can be wrong.
 
@@ -71,13 +71,13 @@ We propose:
 - Send the current path from the shared document, not the view's own copy of it.
 - Send one message that links a Save As copy to its source.
 
-We should ask Matt:
+Questions:
 
 - Can these land, and who makes them?
 - In the Python API, should `GISDocument("x.jGIS")` look in the notebook's folder, not the active
   tab's, fail when the file is missing, and report `null` for a map with no file?
 
-## 4. Order and lost messages (7 min)
+## 4. Order and lost messages
 
 Each message is its own POST. Messages carry no time and no order, and a message that fails is
 lost. If the last two messages of a drag arrive swapped, Trail records the opacity as 0.37 while the
@@ -88,14 +88,14 @@ We propose:
 - Add `seq`, which counts per view, and `time`, the browser's clock, to each message.
 - Send each view's messages in order, and retry one that fails.
 
-We should ask Matt:
+Questions:
 
 - Can both fields go into v1?
-- Is there news on jupyter_server#1710, his issue about passing event times to listeners?
+- Is there news on jupyter_server#1710, the issue about passing event times to listeners?
 - Could jupyter_server's contents `save` message also carry the file's `last_modified` and `size`?
   That would let Trail match each save to its file events exactly.
 
-## 5. `closed`, and who acted (7 min)
+## 5. `closed`, and who acted
 
 `closed` comes when the first view of a map closes, even if other views stay open. Reloading or
 closing the page sends nothing. No message names the user.
@@ -106,12 +106,12 @@ We propose:
   when the page closes. This is a small change to plugin.ts.
 - Messages name the user, as the room's awareness list already does.
 
-We should ask Matt:
+Questions:
 
 - Is this fine, and who changes plugin.ts?
 - Is naming the user in scope?
 
-## 6. Large layer messages (6 min)
+## 6. Large layer messages
 
 Every `updated` carries the whole layer, before and after the change.
 
@@ -124,9 +124,9 @@ Every `updated` carries the whole layer, before and after the change.
 We propose a `layer/v2` that sends only the paths that changed, with metadata in place of embedded
 images: the image's name, type, size and a hash.
 
-We should ask Matt whether a v2 like this fits his plans.
+Would a v2 like this fit the planned feed design?
 
-## 7. Saves and upstream bugs (5 min)
+## 7. Saves and upstream bugs
 
 A layer message is not a save. The file is written about a second later, and in our runs these
 stopped the write:
@@ -145,10 +145,10 @@ We propose:
 - Trail's notes tell users about `LocalFileIdManager`, which keeps a map's room working after a
   move or a folder rename.
 
-We should ask Matt:
+Questions:
 
 - Should events.md say that a layer message is not a save?
-- Will he take the migration-id PR?
+- Would a PR making the migration ids stable be accepted?
 - Who reports each of these bugs?
   - jupyter_server_fileid: renaming a folder loses the ids of the files inside it.
   - JupyterLab: renaming a folder with `(` in its name leaves open views on the old path.
@@ -161,13 +161,13 @@ We should ask Matt:
   - jupyter-collaboration: "Content saved." is reported when nothing was written.
   - jupyter-collaboration: its store, `.jupyter_ystore.db`, lands in the project folder.
 
-## 8. Smaller points and wrap-up (5 min)
+## 8. Smaller points and wrap-up
 
 These need a short answer each:
 
 - Some edits send no message: layer order, sources, projection, annotations and stories. Trail
   will compare saved versions of a map itself. Are source messages, which would add who made a
-  change, on his list?
+  change, planned?
 - Trail no longer probes a server with a message meant to fail. It learns a server's schemas from
   its messages. A route that lists the schemas would be nice, not needed.
 - A payload must not hold its own `schema_id`, since Jupyter Server adds one when it passes the
@@ -177,7 +177,7 @@ These need a short answer each:
 - Two lines are stale: events.md's paragraph on high-frequency events, and "deleted" in
   layer_v1.yaml where it means `removed`.
 
-To close, agree on an owner and a rough date for each change, and on what we do in November.
+To close, agree on an owner for each change and on follow-up work.
 
 ## Leave the meeting with
 
@@ -187,7 +187,7 @@ To close, agree on an owner and a rough date for each change, and on what we do 
 - The scope of a `layer/v2`.
 - A name next to each upstream bug.
 
-## What we can do ourselves in November
+## Follow-up work
 
 - Open PRs to JupyterGIS for any of the four feed changes, the migration ids, and the events.md
   fixes.
