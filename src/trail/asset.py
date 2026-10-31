@@ -9,25 +9,13 @@ from stat import S_ISDIR, S_ISREG
 from typing import TYPE_CHECKING, ClassVar, Final, Self
 
 from trail import fmt
-from trail.entry import Entries, Entry
+from trail.entry import Entry, EntryCollection
 from trail.util import PathLike
 
 if TYPE_CHECKING:
     from trail.session import Access
     from trail.trail import Trail
 
-# the names of the files that are part of a dirasset, by the dirasset's suffix. A name is matched
-# whole, ignoring case. Anything else inside, such as a temporary or lock file, is not part of it
-CHILDREN: Final[dict[str, str]] = {
-    '.zarr': r'\d+(?:\.\d+)*|zarr\.json|\.z(?:array|attrs|group|metadata)',
-    '.n5': r'\d+|attributes\.json',
-    '.gdb': (
-        r'a[0-9a-f]{8}(?:\.(?!_compress\.)[^.]+)?'
-        r'\.(?:gdbtable|gdbtablx|gdbindexes|spx|atx|freelist|horizon)'
-        r'|gdb|timestamps'
-    ),
-    '.safe': r'.+(?<!\.aux)\.(?:jp2|xml|safe|tiff?|gml|html?|xsd|png|jpe?g|kml|json)',
-}
 # a directory tracked with `track DIR` holds everything in it
 EVERYTHING: Final = r'.*'
 
@@ -106,7 +94,10 @@ class Asset(Entry):
         path = Path(path).expanduser().resolve()
         metadata = path.stat()
 
-        if trail is not None and trail._is_ignored(path):
+        if (
+            trail is not None
+            and trail.entries.is_metadata(path)
+        ):
             raise ValueError(f"Cannot track Trail metadata: {path}")
 
         if S_ISDIR(metadata.st_mode):
@@ -181,7 +172,7 @@ class Asset(Entry):
         if destination == self.path:
             return self
         trail = self._trail
-        if trail._is_ignored(destination):
+        if trail.entries.is_metadata(destination):
             raise ValueError(f"Cannot track Trail metadata: {destination}")
         previous = self.path
         self.path = destination
@@ -203,20 +194,33 @@ class DirAsset(Asset):
     product. Its contents are never walked. Files inside it whose names match `children` are part of
     it. Their events are counted into its access.
     """
+    # the names of the files that are part of a dirasset, by the dirasset's suffix. A name is
+    # matched whole, ignoring case. Anything else inside, such as a temporary or lock file, is not
+    # part of it
+    suffix2children: ClassVar[dict[str, str]] = {
+        '.zarr': r'\d+(?:\.\d+)*|zarr\.json|\.z(?:array|attrs|group|metadata)',
+        '.n5': r'\d+|attributes\.json',
+        '.gdb': (
+            r'a[0-9a-f]{8}(?:\.(?!_compress\.)[^.]+)?'
+            r'\.(?:gdbtable|gdbtablx|gdbindexes|spx|atx|freelist|horizon)'
+            r'|gdb|timestamps'
+        ),
+        '.safe': r'.+(?<!\.aux)\.(?:jp2|xml|safe|tiff?|gml|html?|xsd|png|jpe?g|kml|json)',
+    }
 
     is_directory: bool = field(default=True, repr=False)
     # the root's (st_dev, st_ino), to follow a move the watchdog reports as a creation
     inode: tuple[int, int] | None = field(default=None, init=False, repr=False)
 
-    @staticmethod
-    def is_match(path: Path) -> bool:
+    @classmethod
+    def is_match(cls, path: Path) -> bool:
         """
         Whether a directory holds one dataset, judged by its suffix.
 
         >>> DirAsset.is_match(Path('cube.zarr'))
         True
         """
-        out = path.suffix.lower() in CHILDREN
+        out = path.suffix.lower() in cls.suffix2children
         return out
 
     def track(self) -> Self:
@@ -249,7 +253,8 @@ class DirAsset(Asset):
         >>> self.children
         '\\d+(?:\\.\\d+)*|zarr\\.json|\\.z(?:array|attrs|group|metadata)'
         """
-        return CHILDREN.get(self.path.suffix.lower(), EVERYTHING)
+        out = self.suffix2children.get(self.path.suffix.lower(), EVERYTHING)
+        return out
 
     @property
     def access(self) -> Access | None:
@@ -331,7 +336,7 @@ def walk(
                     yield path
 
 
-class Assets(Entries[Asset]):
+class Assets(EntryCollection[Asset]):
     """
     A collection of Asset objects tracked by a Trail, in the order they were tracked.
 
@@ -403,12 +408,13 @@ class Assets(Entries[Asset]):
         else:
             for directory in dirs:
                 walks[directory.path] = directory.is_recursive
-        walked = walk(walks, self._is_descending)
+        entries = trail.entries
+        walked = walk(walks, entries.is_walkable)
         candidates.extend(walked)
         marked = {
             path: dirs.match(path)
             for path in dict.fromkeys(candidates)
-            if self._is_trackable(path)
+            if entries.is_trackable(path)
         }
         if not marked:
             return ()
@@ -456,7 +462,7 @@ class Assets(Entries[Asset]):
             if isinstance(asset, DirAsset):
                 pattern = asset.children
             elif DirAsset.is_match(parent):
-                pattern = CHILDREN[parent.suffix.lower()]
+                pattern = DirAsset.suffix2children[parent.suffix.lower()]
             else:
                 continue
             if re.fullmatch(pattern, path.name, re.IGNORECASE):
@@ -468,57 +474,3 @@ class Assets(Entries[Asset]):
         """Whether the path is part of a dirasset. `holder` returns that dirasset's root."""
         out = self.holder(path) is not None
         return out
-
-    def _is_trackable(self, path: Path) -> bool:
-        """
-        Whether a scan should track a path. The path must not be tracked or offtrailed, and must not
-        be Trail metadata or part of a dirasset. `.markers` must decide it. It must be a file or a
-        dirasset.
-        """
-        trail = self._trail
-        # the stat comes last, since most candidates fail before it
-        if (
-            path in self.path2entry
-            or path in trail._offtrailed_paths
-            or trail._is_ignored(path)
-            or not trail.dirs.tracks(path)
-            or self.is_child(path)
-        ):
-            return False
-        if path.is_file():
-            return True
-        return DirAsset.is_match(path) and path.is_dir()
-
-    def _is_descending(self, path: Path) -> bool:
-        """
-        Whether a walk enters a directory. Symlinks, Trail metadata, offtrailed paths and
-        directory assets are never entered. A hidden directory is entered only if a Dir sits at
-        or below it.
-
-        >>> project: Path
-        >>> self._is_descending(project / '.git')
-        False
-        """
-        trail = self._trail
-        if (
-            path.is_symlink()
-            or trail._is_ignored(path)
-            or path in trail._offtrailed_paths
-            or DirAsset.is_match(path)
-        ):
-            return False
-        asset = self.path2entry.get(path)
-        # the inside of a directory asset is never walked
-        if (
-            asset is not None
-            and asset.is_directory
-        ):
-            return False
-        # a hidden directory is walked only if a Dir sits at or below it, which keeps .git and
-        # .venv out of the walk
-        if not path.name.startswith('.'):
-            return True
-        return any(
-            directory.path.is_relative_to(path)
-            for directory in trail.dirs
-        )

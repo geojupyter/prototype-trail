@@ -14,7 +14,7 @@ from uuid import uuid4
 from trail import fmt
 from trail.asset import Asset, Assets, DirAsset
 from trail.dir import Dirs
-from trail.entry import Entry
+from trail.entries import Entries
 from trail.event import AddAssetEvent, Events, RemoveAssetEvent, WatchdogEvent
 from trail.markers import Markers, Scopes, canonical, parse
 from trail.node import Node
@@ -166,9 +166,14 @@ class Trail(Node):
         return self.dirs.scopes
 
     @cached_property
-    def _offtrailed_paths(self) -> set[Path]:
-        """The paths offtrailed in the log. `.markers` does not pick them up again."""
-        return set()
+    def entries(self) -> Entries:
+        """
+        Returns an Entries instance that looks up the assets and the Dirs together, by id or by
+        path. It also holds the paths removed with `offtrail`, and the checks that a scan, a walk
+        and the watchdog apply to a path.
+        """
+        out = Entries(self)
+        return out
 
     @cached_property
     def json(self):
@@ -334,7 +339,7 @@ class Trail(Node):
         """
         made: dict[Path, Asset] = {}
         for path in requested:
-            if self._is_ignored(path):
+            if self.entries.is_metadata(path):
                 raise ValueError(f"Cannot track Trail metadata: {path}")
             # each event logged would count toward it, and so would logging that event
             if (
@@ -388,13 +393,6 @@ class Trail(Node):
             stacklevel=4,
         )
         self.offtrail(*inside)
-
-    def _is_ignored(self, path: Path) -> bool:
-        """Returns True if the path is relative to the `trail` directory, e.g. `/.trail/ignored"""
-        return (
-            self.dir is not None
-            and path.is_relative_to(self.dir)
-        )
 
     def offtrail(self, *paths: PathLike) -> Asset | list[Asset]:
         """Offtrails the specified filesystem paths from the Trail."""
@@ -601,22 +599,6 @@ class Trail(Node):
         """
         self.assets.clear()
         self.events.clear()
-
-    def _entry(self, identifier: str) -> Entry | None:
-        """
-        Returns the asset or the Dir with an id, or None if neither holds it.
-
-        >>> self._entry('04e15251538241309989553fb4672653')
-        Dir
-            id: 04e15251538241309989553fb4672653
-            path: /tmp/tmpp_bl05lq
-            root: True
-            scopes: []
-        """
-        asset = self.assets.id2entry.get(identifier)
-        if asset is not None:
-            return asset
-        return self.dirs.id2entry.get(identifier)
 
     def push(self):
         """Placeholder for possible remote synchronization"""

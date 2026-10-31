@@ -36,7 +36,7 @@ class Entry(Node):
     path: Path
 
     if TYPE_CHECKING:
-        _parent: Entries[Self] = field(init=False, repr=False)
+        _parent: EntryCollection[Self] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         """Normalize the id and resolve the path."""
@@ -84,7 +84,7 @@ class Entry(Node):
         trail = collection._trail
         if self._trail is not trail:
             raise ValueError(f"{type(self).__name__} already belongs to another Trail")
-        if trail._is_ignored(self.path):
+        if trail.entries.is_metadata(self.path):
             raise ValueError(f"Cannot track Trail metadata: {self.path}")
         previous = collection.id2entry.get(self.id)
         # a path holds one entry of each kind
@@ -110,10 +110,10 @@ class Entry(Node):
         del collection[self.id]
 
 
-class Entries[E: Entry](Collection[EntryKey, E]):
+class EntryCollection[E: Entry](Collection[EntryKey, E]):
     """
-    Entries by id and by path, in the order they were added. `Assets` and `Dirs` are the two
-    kinds.
+    Entries of one kind by id and by path, in the order they were added. `Assets` and `Dirs` are
+    the two kinds. `trail.entries` looks up both at once.
     """
 
     # the class of what the collection holds

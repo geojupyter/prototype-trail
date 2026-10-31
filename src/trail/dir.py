@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from trail import fmt
 from trail.asset import DirAsset
-from trail.entry import Entries, Entry
+from trail.entry import Entry, EntryCollection
 from trail.event import AddDirEvent, RemoveDirEvent
 from trail.markers import Scopes, parse
 
@@ -182,7 +182,7 @@ def match(
     return scopes.decide(path.relative_to(root).as_posix())
 
 
-class Dirs(Entries[Dir]):
+class Dirs(EntryCollection[Dir]):
     """
     The directories `.markers` names, by id and by path, plus the root scopes, which apply beneath
     every root. A subfolder of a root has no Dir of its own, since its ancestor covers it. So this
@@ -211,7 +211,7 @@ class Dirs(Entries[Dir]):
 
     def __init__(self, parent: Trail | None = None) -> None:
         """Start with no Dirs and no root scopes. `refresh` takes them from `.markers`."""
-        Entries.__init__(self, parent)
+        EntryCollection.__init__(self, parent)
         self.scopes = Scopes()
 
     def __repr__(self) -> str:

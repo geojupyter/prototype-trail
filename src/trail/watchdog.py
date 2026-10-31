@@ -103,7 +103,7 @@ class Watchdog(Node):
                 parent in roots
                 for parent in path.parents
             )
-            and not trail._is_ignored(path)
+            and not trail.entries.is_metadata(path)
             and path.is_dir()
         }
 

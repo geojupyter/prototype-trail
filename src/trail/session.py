@@ -985,14 +985,14 @@ class Session(Node):
                 and event.dest_path
         ):
             destination = Path(event.dest_path).resolve()
-            if not trail._is_ignored(source):
+            if not trail.entries.is_metadata(source):
                 trail._moved(source, destination)
         elif event.event_type == "created":
             destination = source
         else:
             return
         self.reconcile()
-        if trail._is_ignored(destination):
+        if trail.entries.is_metadata(destination):
             return
         # files written before the watch was placed never produce an event, so they are scanned
         with suppress(FileNotFoundError, NotADirectoryError):

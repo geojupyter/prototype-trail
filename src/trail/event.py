@@ -132,9 +132,7 @@ class Event:
             setattr(event, name, value)
 
         if resolved_entry is None:
-            resolved_entry = trail._entry(entry_id)
-            if resolved_entry is None:
-                raise KeyError(entry_id)
+            resolved_entry = trail.entries[entry_id]
         elif resolved_entry.id != entry_id:
             raise ValueError(f"Entry ID does not match event record: {entry_id}")
         event.entry = resolved_entry
@@ -194,7 +192,7 @@ class AddAssetEvent(Event):
     ) -> Asset:
         """
         Track the asset at `src_path` and return it. Unless this is a replay, its size and
-        mtime are recorded as the baseline. The path is no longer counted as offtrailed.
+        mtime are recorded as the baseline. The path leaves `trail.entries.untracked`.
         """
         if replay:
             asset = self.entry
@@ -208,7 +206,7 @@ class AddAssetEvent(Event):
         self.is_directory = asset.is_directory
         if not replay:
             self._stat(asset)
-        trail._offtrailed_paths.discard(asset.path)
+        trail.entries.untracked.discard(asset.path)
         return asset
 
     def _stat(self, asset: Asset) -> None:
@@ -228,8 +226,8 @@ class AddAssetEvent(Event):
 @dataclass(kw_only=True, slots=True, repr=False)
 class RemoveAssetEvent(Event):
     """
-    An asset being offtrailed. Its path is remembered as offtrailed, so `.markers` does not
-    pick it up again.
+    An asset being offtrailed. Its path is added to `trail.entries.untracked`, so `.markers` does
+    not pick it up again.
 
     >>> trail: Trail
     >>> trail.events.select[-1:]
@@ -261,7 +259,7 @@ class RemoveAssetEvent(Event):
             return None
         self.entry = asset
         asset.offtrail()
-        trail._offtrailed_paths.add(asset.path)
+        trail.entries.untracked.add(asset.path)
         return asset
 
 
@@ -395,8 +393,8 @@ class WatchdogEvent(Event):
             if path is None:
                 continue
             if (
-                path in trail._offtrailed_paths
-                or trail._is_ignored(path)
+                path in trail.entries.untracked
+                or trail.entries.is_metadata(path)
             ):
                 return None
         entry = self._find(trail, source, destination)
@@ -541,19 +539,19 @@ class JSONL(Node):
         if path is None or not path.exists():
             return
         loaded: dict[str, Event] = {}
-        entries: dict[str, Entry] = {}
+        seen: dict[str, Entry] = {}
         with path.open(encoding="utf-8") as file:
             for line in file:
                 if not line.strip():
                     continue
                 record = json.loads(line)
                 entry_id = normalize_id(record["entry"])
-                entry = entries.get(entry_id)
+                entry = seen.get(entry_id)
                 if entry is None:
-                    entry = trail._entry(entry_id)
+                    entry = trail.entries.get(entry_id)
                     if entry is None:
                         entry = self.record2entry(record, entry_id)
-                    entries[entry_id] = entry
+                    seen[entry_id] = entry
                 event = Event.from_record(trail=trail, resolved_entry=entry, **record)
                 if event.id in loaded:
                     raise ValueError(f"Duplicate event ID in {path}: {event.id}")
