@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
 from trail import Trail
-from trail.cli.marker_completion import MarkerPaths
+from trail.cli.rule_completion import RulePaths
 from trail.dir import build, match
-from trail.markers import canonical
 
 PROJECT = Path('/home/user/project')
 
@@ -97,7 +94,7 @@ class TestMatching:
 
 
 class TestRoots:
-    """`./` and `./*`, and a dir with and without its directory marker."""
+    """`./` and `./*`, and a dir with and without its own root rule, such as `dir/`."""
 
     files = (
         'a.csv',
@@ -117,14 +114,14 @@ class TestRoots:
         assert self.tracked(['./', '*.csv']) == ['a.csv', 'data/a.csv']
         assert self.tracked(['./*', '*.csv']) == ['a.csv', 'notes.ipynb', '.env']
 
-    def test_a_dir_takes_the_root_scopes_only_with_its_marker(self) -> None:
+    def test_a_dir_takes_the_root_scopes_only_with_its_root_rule(self) -> None:
         directory = Path('/dir')
         without = ['*.csv', '/dir/*.png']
         assert not tracks(without, directory / 'a.csv')
         assert tracks(without, directory / 'a.png')
-        marked = ['*.csv', '/dir/', '/dir/*.png']
-        assert tracks(marked, directory / 'a.csv')
-        assert tracks(marked, directory / 'a.png')
+        rooted = ['*.csv', '/dir/', '/dir/*.png']
+        assert tracks(rooted, directory / 'a.csv')
+        assert tracks(rooted, directory / 'a.png')
 
     def test_a_subtree_is_taken_out_and_partly_back_in(self) -> None:
         lines = ['./', '*.csv', '!data/images/**', 'data/images/*.png']
@@ -134,104 +131,13 @@ class TestRoots:
         assert tracks(lines, PROJECT / 'data' / 'images' / 'a.png')
 
 
-class TestCanonical:
-    """Every input step 2 of the plan lists."""
-
-    @staticmethod
-    @contextmanager
-    def project() -> Iterator[tuple[Path, Path]]:
-        with (
-            TemporaryDirectory() as temporary,
-            TemporaryDirectory() as home,
-            pytest.MonkeyPatch.context() as monkeypatch,
-        ):
-            monkeypatch.setenv('HOME', home)
-            project = Path(temporary).resolve()
-            (project / 'data' / 'raw').mkdir(parents=True)
-            (project / 'notes.md').write_text('a\n', encoding='utf-8')
-            yield project, Path(home).resolve()
-
-    def test_extensions(self) -> None:
-        with self.project() as (project, _):
-            assert canonical('csv', project, project) == '*.csv'
-            assert canonical('.csv', project, project) == '*.csv'
-            assert canonical('.tar.gz', project, project) == '*.tar.gz'
-            assert canonical('*.csv', project, project) == '*.csv'
-            assert canonical(' csv ', project, project) == '*.csv'
-
-    def test_a_double_star_without_a_slash_is_dropped(self) -> None:
-        with self.project() as (project, _):
-            assert canonical('**/*.csv', project, project) == '*.csv'
-            assert canonical('**/requirements*.txt', project, project) == 'requirements*.txt'
-
-    def test_an_existing_directory_gets_its_slash(self) -> None:
-        with self.project() as (project, _):
-            assert canonical('data', project, project) == 'data/'
-            assert canonical('data/raw', project, project) == 'data/raw/'
-            assert canonical('.', project, project) == './'
-            assert canonical(str(project), project, project) == './'
-
-    def test_a_dirasset_gets_no_slash(self) -> None:
-        with self.project() as (project, _):
-            (project / 'cube.zarr').mkdir()
-            (project / 'data' / 'scene.SAFE').mkdir()
-            assert canonical('cube.zarr', project, project) == './cube.zarr'
-            assert canonical('data/scene.SAFE', project, project) == 'data/scene.SAFE'
-            assert canonical('../cube.zarr', project, project / 'data') == './cube.zarr'
-
-    def test_a_dotted_folder_keeps_its_slash(self) -> None:
-        with self.project() as (project, _):
-            for name in ('results.v2', 'python3.12', '2026.10'):
-                (project / name).mkdir()
-                assert canonical(name, project, project) == f'{name}/'
-
-    def test_a_leading_dot_slash_goes_once_the_rest_has_a_slash(self) -> None:
-        with self.project() as (project, _):
-            assert canonical('./data/raw/*.tif', project, project) == 'data/raw/*.tif'
-            assert canonical('./data/', project, project) == 'data/'
-            assert canonical('./a.csv', project, project) == './a.csv'
-            assert canonical('./*', project, project) == './*'
-
-    def test_paths_are_written_from_the_project_then_from_home(self) -> None:
-        with self.project() as (project, home):
-            assert canonical(str(project / 'data' / '*.png'), project, project) == 'data/*.png'
-            # relative input is read from the working directory
-            assert canonical('raw/*.tif', project, project / 'data') == 'data/raw/*.tif'
-            assert canonical(f'{home}/Downloads/x_*.png', project, project) == (
-                '~/Downloads/x_*.png'
-            )
-            assert canonical('~/Downloads/', project, project) == '~/Downloads/'
-            assert canonical('/mnt/data/*.tif', project, project) == '/mnt/data/*.tif'
-
-    def test_a_single_word_is_a_path_if_one_exists(self) -> None:
-        with self.project() as (project, _):
-            assert canonical('notes.md', project, project) == './notes.md'
-            assert canonical('notes.txt', project, project) == '*.notes.txt'
-            # './' forces the path reading, and a leading dot the extension
-            assert canonical('./notes.txt', project, project) == './notes.txt'
-            assert canonical('.md', project, project) == '*.md'
-
-    def test_a_bang_is_kept(self) -> None:
-        with self.project() as (project, _):
-            assert canonical('!.tmp', project, project) == '!*.tmp'
-            assert canonical('!data/*.tmp', project, project) == '!data/*.tmp'
-            # an excluded directory stays anchored, rather than becoming a root scope
-            assert canonical('!data', project, project) == '!./data/'
-
-    def test_nothing_is_not_a_marker(self) -> None:
-        with self.project() as (project, _):
-            for text in ('', '!', '**/'):
-                with pytest.raises(ValueError):
-                    canonical(text, project, project)
-
-
 class TestCompletion:
     def test_a_dirasset_completes_without_a_slash(self) -> None:
         with TemporaryDirectory() as temporary:
             project = Path(temporary).resolve()
             (project / 'cube.zarr').mkdir()
             (project / 'data').mkdir()
-            completer = MarkerPaths(lambda: project, lambda: project)
+            completer = RulePaths(lambda: project, lambda: project)
             completions = {
                 completion.display_text: completion.text
                 for text in ('./cu', './da')
@@ -244,12 +150,12 @@ class TestCompletion:
 
 
 class TestReprs:
-    MARKERS = './\n*.csv\ndata/\ndata/*.png\ndata/raw/*.tif\n'
+    RULES = './\n*.csv\ndata/\ndata/*.png\ndata/raw/*.tif\n'
 
     def test_dirs_and_scopes(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            (root / '.markers').write_text(self.MARKERS, encoding='utf-8')
+            (root / '.ontrail').write_text(self.RULES, encoding='utf-8')
             trail = Trail(root)
             ids = trail.dirs.ids
             assert repr(trail.dirs) == '\n'.join(
@@ -297,7 +203,7 @@ class TestReprs:
 
 
 if __name__ == "__main__":
-    for suite in (TestMatching(), TestRoots(), TestCanonical(), TestCompletion(), TestReprs()):
+    for suite in (TestMatching(), TestRoots(), TestCompletion(), TestReprs()):
         for name in dir(suite):
             if name.startswith('test_'):
                 getattr(suite, name)()

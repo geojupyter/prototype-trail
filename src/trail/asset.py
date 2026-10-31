@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import warnings
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
     from trail.session import Access
     from trail.trail import Trail
 
-# a directory tracked with `track DIR` holds everything in it
+# a directory tracked with `ontrail DIR` holds everything in it
 EVERYTHING: Final = r'.*'
 
 
@@ -72,8 +73,8 @@ class Asset(Entry):
             trail: Trail | None = None,
     ) -> Asset:
         """
-        Returns a new asset for an existing file or directory. The asset is not tracked until
-        `track` is called.
+        Returns a new asset for an existing file or directory. It is not added to
+        `trail.assets`.
         - A class whose `is_directory` matches the path makes it as itself.
         - `Asset.from_path` makes a DirAsset for a directory.
         - `DirAsset.from_path` raises ValueError for a file.
@@ -182,7 +183,7 @@ class Asset(Entry):
             occupant is not None
             and occupant is not self
         ):
-            occupant.offtrail()
+            occupant._unregister()
         collection.repath(self, previous)
         return self
 
@@ -223,9 +224,9 @@ class DirAsset(Asset):
         out = path.suffix.lower() in cls.suffix2children
         return out
 
-    def track(self) -> Self:
+    def _register(self) -> Self:
         """Hold the dirasset in its collection, and take its root's inode. Nothing is logged."""
-        super().track()
+        super()._register()
         self._take_inode()
         return self
 
@@ -248,7 +249,7 @@ class DirAsset(Asset):
     def children(self) -> str:
         """
         The pattern that matches the names of files in the dirasset. A directory tracked with
-        `track DIR` holds everything in it.
+        `ontrail DIR` holds everything in it.
 
         >>> self.children
         '\\d+(?:\\.\\d+)*|zarr\\.json|\\.z(?:array|attrs|group|metadata)'
@@ -268,7 +269,7 @@ class DirAsset(Asset):
             return None
         return session.accesses[self.id]
 
-    def offtrail(self) -> None:
+    def _unregister(self) -> None:
         """Log the dirasset's open access, then remove it from the collection."""
         collection = self._parent
         if (
@@ -276,7 +277,7 @@ class DirAsset(Asset):
             and collection.id2entry.get(self.id) is self
         ):
             self._trail.watchdog.session.flush(self)
-        Asset.offtrail(self)
+        super()._unregister()
 
 
 def walk(
@@ -357,9 +358,78 @@ class Assets(EntryCollection[Asset]):
 
     entry_type = Asset
 
+    def add(self, requested: Mapping[Path, str | None]) -> list[Asset]:
+        """
+        Track each path and record the rule of `.ontrail` that took it, or None. Returns the
+        assets in the order requested. Refuses Trail metadata, a directory that holds the Trail's
+        own directory, and a file that is part of a dirasset. The watchdog's session is reconciled
+        after anything new is tracked, so a new dirasset is watched and its root is handed to the
+        handler.
+        """
+        from trail.event import AddAssetEvent
+
+        trail = self._trail
+        assets = trail.assets
+        made = dict[Path, Asset]()
+        for path in requested:
+            if trail.entries.is_metadata(path):
+                raise ValueError(f"Cannot track Trail metadata: {path}")
+            # each event logged would count toward it, and so would logging that event
+            if (
+                trail.dir is not None
+                and trail.dir.is_relative_to(path)
+            ):
+                raise ValueError(f"Cannot track {path} whole, since it holds {trail.dir}")
+            holder = assets.holder(path)
+            if holder is not None:
+                raise ValueError(f"Cannot track {path}, since it is part of {holder}")
+            if path not in assets:
+                made[path] = Asset.from_path(path, trail=trail)
+        tracked = []
+        for path, rule in requested.items():
+            asset = assets.get(path)
+            if asset is None:
+                fresh = made[path]
+                if isinstance(fresh, DirAsset):
+                    assets._absorb(fresh)
+                event = AddAssetEvent(src_path=str(path), rule=rule)
+                asset = event.apply(trail)
+                trail.events.append(event)
+                # a directory asset is never a Dir, so a Dir at its path goes
+                if asset.is_directory:
+                    trail.dirs.refresh()
+            tracked.append(asset)
+        if made:
+            trail.watchdog.session.reconcile()
+        return tracked
+
+    def _absorb(self, dirasset: DirAsset) -> None:
+        """
+        Untrack the tracked assets inside a directory that is about to be tracked whole, if their
+        names match its children. They become part of the directory. A warning says how many, such
+        as "tracking table whole untracks 1 asset inside it".
+        """
+        root = dirasset.path
+        pattern = re.compile(dirasset.children, re.IGNORECASE)
+        inside = [
+            asset.path
+            for asset in self
+            if asset.path != root
+            and asset.path.is_relative_to(root)
+            and pattern.fullmatch(asset.name)
+        ]
+        if not inside:
+            return
+        count = fmt.plural(len(inside), 'asset')
+        warnings.warn(
+            f"tracking {dirasset.name} whole untracks {count} inside it",
+            stacklevel=4,
+        )
+        self._trail.offtrail(*inside)
+
     def clear(self) -> None:
         """
-        Offtrail everything the collection holds. The removals are recorded like any other, so a
+        Untrack everything the collection holds. The removals are recorded like any other, so a
         replay of the log does not bring the assets back.
         """
         paths = tuple(
@@ -372,7 +442,7 @@ class Assets(EntryCollection[Asset]):
 
     def scan(self, *paths: PathLike) -> tuple[Asset, ...]:
         """
-        Track files that `.markers` picks up and the Trail does not track yet. A file in `paths` is
+        Track files that `.ontrail` takes and the Trail does not track yet. A file in `paths` is
         checked alone. A directory in `paths` is walked. With no paths, every Dir is walked. A
         recursive Dir is walked at any depth. Any other Dir is walked for its own files only.
         Returns the assets newly tracked.
@@ -411,14 +481,15 @@ class Assets(EntryCollection[Asset]):
         entries = trail.entries
         walked = walk(walks, entries.is_walkable)
         candidates.extend(walked)
-        marked = {
+        taken = {
             path: dirs.match(path)
             for path in dict.fromkeys(candidates)
             if entries.is_trackable(path)
         }
-        if not marked:
+        if not taken:
             return ()
-        return tuple(trail._track(marked))
+        out = tuple(self.add(taken))
+        return out
 
     def _reach(self, path: Path) -> dict[Path, bool]:
         """

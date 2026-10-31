@@ -30,7 +30,7 @@ from trail.asset import DirAsset
 from trail.cli.console import Console
 from trail.event import OPS, DirectoryAccessEvent, Event, RemoveAssetEvent, WatchdogEvent
 from trail.playground import GDB, Playground, Store, ZarrV3
-from trail.session import Session
+from trail.session import WatchdogSession
 
 # no watchdog backend other than inotify reports a file being opened
 needs_opens = pytest.mark.skipif(sys.platform != 'linux', reason='only inotify reports opens')
@@ -60,8 +60,8 @@ class TestDirectoryAccessEvent:
             cube = root / 'cube.zarr'
             cube.mkdir()
             (cube / 'zarr.json').write_text('{}', encoding='utf-8')
-            trail = Trail(root, markers=None)
-            yield trail, trail.track(cube)
+            trail = Trail(root, ontrail=None)
+            yield trail, trail.ontrail(cube)
 
     @staticmethod
     def access(asset: DirAsset) -> DirectoryAccessEvent:
@@ -161,15 +161,17 @@ class TestAccesses:
 
     @staticmethod
     @contextmanager
-    def session(store: type[Store] | None = None) -> Iterator[tuple[Trail, DirAsset, Session]]:
+    def session(
+            store: type[Store] | None = None,
+    ) -> Iterator[tuple[Trail, DirAsset, WatchdogSession]]:
         with Playground() as playground:
             if store is None:
                 node = playground.zarr
             else:
                 node = store(playground, 'store')
             node.create()
-            trail = Trail(playground.path, markers=None)
-            asset = trail.track(node.path)
+            trail = Trail(playground.path, ontrail=None)
+            asset = trail.ontrail(node.path)
             session = trail.watchdog.session
             session.prepare(StubLoop())
             session.publish()
@@ -297,7 +299,7 @@ class TestAccesses:
             session.consume()
             assert not self.accesses(trail)
 
-    def test_offtrailing_a_dirasset_records_its_access_first(self) -> None:
+    def test_untracking_a_dirasset_records_its_access_first(self) -> None:
         with self.session() as (trail, asset, session):
             session.accesses.count(asset.id, 'modified', 1000.0, 10.0)
             trail.offtrail(asset.path)
@@ -358,13 +360,13 @@ class TestAccessesWatched:
         ]
 
     @staticmethod
-    def mark(playground: Playground) -> None:
-        (playground.path / '.markers').write_text('./\n*.zarr\n*.safe\n', encoding='utf-8')
+    def write_ontrail(playground: Playground) -> None:
+        (playground.path / '.ontrail').write_text('./\n*.zarr\n*.safe\n', encoding='utf-8')
 
     @needs_opens
     def test_reading_a_dirasset_records_one_opened_access(self) -> None:
         with Playground() as playground:
-            self.mark(playground)
+            self.write_ontrail(playground)
             playground.zarr.create()
 
             async def run() -> None:
@@ -385,7 +387,7 @@ class TestAccessesWatched:
 
     def test_writing_below_the_top_level_is_counted(self) -> None:
         with Playground() as playground:
-            self.mark(playground)
+            self.write_ontrail(playground)
             playground.zarr.create()
 
             async def run() -> None:
@@ -405,7 +407,7 @@ class TestAccessesWatched:
     @needs_opens
     def test_concurrent_reads_merge_into_one_access(self) -> None:
         with Playground() as playground:
-            self.mark(playground)
+            self.write_ontrail(playground)
             playground.zarr.create()
 
             async def run() -> None:
@@ -431,7 +433,7 @@ class TestAccessesWatched:
     @needs_opens
     def test_reading_a_band_of_a_safe_product_is_recorded(self) -> None:
         with Playground() as playground:
-            self.mark(playground)
+            self.write_ontrail(playground)
             safe = playground.safe
             safe.create()
 
@@ -450,13 +452,13 @@ class TestAccessesWatched:
 
     def test_stopping_records_every_open_access(self) -> None:
         with Playground() as playground:
-            self.mark(playground)
+            self.write_ontrail(playground)
             playground.zarr.create()
             playground.gdb.create()
 
             async def run() -> None:
                 trail = Trail(playground.path)
-                trail.track(playground.gdb.path)
+                trail.ontrail(playground.gdb.path)
                 trail.watchdog.session.debounce = 0
                 # nothing closes by itself before stop()
                 trail.watchdog.session.idle_gap = 60
@@ -484,7 +486,7 @@ class TestAccessesWatched:
 
     def test_a_session_left_running_logs_its_accesses_when_replaced(self) -> None:
         with Playground() as playground:
-            self.mark(playground)
+            self.write_ontrail(playground)
             playground.zarr.create()
             trail = Trail(playground.path)
             asset = trail.assets[playground.zarr.path]
@@ -517,7 +519,7 @@ class TestAccessesWatched:
 
     def test_a_cancelled_consumer_records_its_accesses(self) -> None:
         with Playground() as playground:
-            self.mark(playground)
+            self.write_ontrail(playground)
             playground.zarr.create()
             trail = Trail(playground.path)
             asset = trail.assets[playground.zarr.path]
@@ -559,19 +561,19 @@ class TestLifecycle:
         return out
 
     @staticmethod
-    def mark(
+    def write_ontrail(
             playground: Playground,
-            *markers: str,
+            *rules: str,
     ) -> None:
         text = ''.join(
-            f'{marker}\n'
-            for marker in markers
+            f'{rule}\n'
+            for rule in rules
         )
-        (playground.path / '.markers').write_text(text, encoding='utf-8')
+        (playground.path / '.ontrail').write_text(text, encoding='utf-8')
 
     def test_an_access_is_recorded_before_the_dirasset_is_deleted(self) -> None:
         with Playground() as playground:
-            self.mark(playground, './', '*.zarr')
+            self.write_ontrail(playground, './', '*.zarr')
             store = playground.zarr
             store.create()
 
@@ -600,7 +602,7 @@ class TestLifecycle:
 
     def test_rewriting_a_dirasset_in_place_keeps_its_id(self) -> None:
         with Playground() as playground:
-            self.mark(playground, './', '*.zarr')
+            self.write_ontrail(playground, './', '*.zarr')
             store = playground.zarr
             store.create()
 
@@ -628,7 +630,7 @@ class TestLifecycle:
 
     def test_a_dirasset_renamed_in_its_parent_keeps_its_id(self) -> None:
         with Playground() as playground:
-            self.mark(playground, './', '*.zarr')
+            self.write_ontrail(playground, './', '*.zarr')
             store = playground.zarr
             store.create()
             renamed = playground.path / 'renamed.zarr'
@@ -654,7 +656,7 @@ class TestLifecycle:
     def test_a_dirasset_moved_between_watches_keeps_its_id(self) -> None:
         with Playground() as playground:
             # two Dirs and no project root, so each is a watch of its own
-            self.mark(playground, 'a/', 'b/', '*.zarr')
+            self.write_ontrail(playground, 'a/', 'b/', '*.zarr')
             source = playground.subdir('a')
             source.create()
             playground.subdir('b').create()
@@ -700,7 +702,7 @@ class TestLifecycle:
 
     def test_an_ancestor_rename_records_the_access_at_the_old_path(self) -> None:
         with Playground() as playground:
-            self.mark(playground, './', 'data/', '*.zarr')
+            self.write_ontrail(playground, './', 'data/', '*.zarr')
             data = playground.subdir('data')
             data.create()
             store = ZarrV3(data, 'cube')
@@ -763,8 +765,8 @@ class TestConsole:
             store.create()
             pipe = stack.enter_context(create_pipe_input())
             stack.enter_context(create_app_session(input=pipe, output=DummyOutput()))
-            trail = Trail(playground.path, markers=None)
-            asset = trail.track(store.path)
+            trail = Trail(playground.path, ontrail=None)
+            asset = trail.ontrail(store.path)
             trail.watchdog.session.debounce = 0
             # nothing closes by itself, so stop() closes it as the console exits
             trail.watchdog.session.idle_gap = 60

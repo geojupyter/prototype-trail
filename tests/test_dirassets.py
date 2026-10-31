@@ -46,12 +46,44 @@ class TestDirAssets:
             if pattern.fullmatch(name)
         ]
 
+    def test_assets_add_records_files_and_datasets_with_their_rules(self) -> None:
+        with self.workspace() as root:
+            trail = Trail(root, ontrail=None)
+            requested = {
+                root / 'dataset.csv': None,
+                root / 'cube.zarr': '*.zarr',
+            }
+            added = trail.assets.add(requested)
+            assert type(added[0]) is Asset
+            assert isinstance(added[1], DirAsset)
+            expected = [
+                trail.assets[path]
+                for path in requested
+            ]
+            assert added == expected
+            events = list(trail.events)
+            assert all(
+                isinstance(event, AddAssetEvent)
+                for event in events
+            )
+            rules = [
+                event.rule
+                for event in events
+            ]
+            assert rules == [None, '*.zarr']
+            assert trail.assets.add(requested) == added
+            assert list(trail.events) == events
+            selection = trail.assets.select[:0]
+            assert selection.add(requested) == added
+            assert not selection
+            assert list(trail.events) == events
+
     def test_a_tracked_directory_is_a_dirasset(self) -> None:
         with self.workspace() as root:
-            trail = Trail(root, markers=None)
-            cube = trail.track(root / 'cube.zarr')
-            table = trail.track(root / 'table')
-            csv = trail.track(root / 'dataset.csv')
+            trail = Trail(root, ontrail=None)
+            cube = trail.ontrail(root / 'cube.zarr')
+            table = trail.ontrail(root / 'table')
+            csv = trail.ontrail(root / 'dataset.csv')
             assert isinstance(cube, DirAsset)
             assert isinstance(table, DirAsset)
             assert type(csv) is Asset
@@ -62,9 +94,9 @@ class TestDirAssets:
 
     def test_a_dirasset_survives_a_reload(self) -> None:
         with self.workspace() as root:
-            trail = Trail(root, markers=None)
-            cube = trail.track(root / 'cube.zarr')
-            csv = trail.track(root / 'dataset.csv')
+            trail = Trail(root, ontrail=None)
+            cube = trail.ontrail(root / 'cube.zarr')
+            csv = trail.ontrail(root / 'dataset.csv')
             restored = Trail(root)
             assert isinstance(restored.assets[cube.id], DirAsset)
             assert restored.assets[root / 'cube.zarr'].id == cube.id
@@ -146,17 +178,17 @@ class TestDirAssets:
     def test_tracking_a_child_of_a_dirasset_is_refused(self) -> None:
         with self.workspace() as root:
             cube = root / 'cube.zarr'
-            trail = Trail(root, markers=None)
+            trail = Trail(root, ontrail=None)
             # a directory whose suffix makes it a dirasset holds its children before it is tracked
             with pytest.raises(ValueError, match='part of'):
-                trail.track(cube / 'zarr.json')
-            trail.track(cube)
+                trail.ontrail(cube / 'zarr.json')
+            trail.ontrail(cube)
             for path in (cube / 'zarr.json', cube / 'arr' / 'c' / '0' / '0'):
                 with pytest.raises(ValueError, match=f'part of {cube}'):
-                    trail.track(path)
-            table = trail.track(root / 'table')
+                    trail.ontrail(path)
+            table = trail.ontrail(root / 'table')
             with pytest.raises(ValueError, match='part of'):
-                trail.track(table.path / 'part-0.csv')
+                trail.ontrail(table.path / 'part-0.csv')
             assert len(trail.assets) == 2
 
     def test_a_file_that_is_not_a_child_can_be_tracked(self) -> None:
@@ -164,21 +196,21 @@ class TestDirAssets:
             cube = root / 'cube.zarr'
             notes = cube / 'notes.md'
             notes.write_text('a\n', encoding='utf-8')
-            trail = Trail(root, markers=None)
-            trail.track(cube)
-            asset = trail.track(notes)
+            trail = Trail(root, ontrail=None)
+            trail.ontrail(cube)
+            asset = trail.ontrail(notes)
             assert type(asset) is Asset
             assert trail.assets[notes] is asset
 
-    def test_tracking_a_directory_offtrails_its_children(self) -> None:
+    def test_tracking_a_directory_untracks_its_children(self) -> None:
         with self.workspace() as root:
             table = root / 'table'
-            trail = Trail(root, markers=None)
-            part = trail.track(table / 'part-0.csv')
-            outside = trail.track(root / 'dataset.csv')
-            absorbed = 'tracking table whole offtrails 1 asset inside it'
+            trail = Trail(root, ontrail=None)
+            part = trail.ontrail(table / 'part-0.csv')
+            outside = trail.ontrail(root / 'dataset.csv')
+            absorbed = 'tracking table whole untracks 1 asset inside it'
             with pytest.warns(UserWarning, match=absorbed):
-                trail.track(table)
+                trail.ontrail(table)
             assert table / 'part-0.csv' not in trail.assets
             assert trail.assets[root / 'dataset.csv'] is outside
             removal = trail.events.select[-2]
@@ -190,27 +222,27 @@ class TestDirAssets:
 
     def test_the_project_directory_cannot_be_tracked_whole(self) -> None:
         with self.workspace() as root:
-            trail = Trail(root, markers=None)
+            trail = Trail(root, ontrail=None)
             for path in (root, root.parent):
                 with pytest.raises(ValueError, match='holds'):
-                    trail.track(path)
+                    trail.ontrail(path)
             assert not trail.assets
             # a pathless Trail keeps its log in memory, so any directory can be tracked
-            assert Trail().track(root).is_directory
+            assert Trail().ontrail(root).is_directory
 
-    def test_marking_inside_a_dirasset_tracks_no_chunk(self) -> None:
+    def test_a_rule_inside_a_dirasset_tracks_no_chunk(self) -> None:
         with self.workspace() as root:
             cube = root / 'cube.zarr'
-            (root / '.markers').write_text('./\n*.json\n', encoding='utf-8')
+            (root / '.ontrail').write_text('./\n*.json\n', encoding='utf-8')
             trail = Trail(root)
             assert not trail.assets
-            trail.mark('cube.zarr/arr/')
+            trail.ontrail.add('cube.zarr/arr/')
             assert cube / 'arr' / 'zarr.json' not in trail.assets
             assert cube / 'arr' / 'c' / '0' / '0' not in trail.assets
             assert not trail.assets
             # the line names a directory inside a dirasset, so it makes no Dir
             assert list(trail.dirs.path2entry) == [root]
-            [warning] = trail.markers.warnings
+            [warning] = trail.ontrail.warnings
             assert "'cube.zarr/arr/' names a directory asset" in warning
 
 

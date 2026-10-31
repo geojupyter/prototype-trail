@@ -13,13 +13,14 @@ from prompt_toolkit.completion import (
 from prompt_toolkit.document import Document
 
 from trail.asset import DirAsset
-from trail.markers import MAGIC, canonical, extensions, kind
+from trail.ontrail import extensions
+from trail.rule import MAGIC, Rule
 
 
 class Paths(PathCompleter):
     """
     A PathCompleter that adds a trailing slash to directories, like a shell does. Without it,
-    the next thing typed runs into the directory name. A dirasset gets no slash, since its line
+    the next thing typed runs into the directory name. A dirasset gets no slash, since its rule
     names it without one.
     """
 
@@ -47,10 +48,10 @@ class Paths(PathCompleter):
                 )
 
 
-class MarkerCompleter(Completer):
+class RuleCompleter(Completer):
     """
-    Base of the completers for a line of `.markers`. The word before the cursor is the line
-    being completed, and each candidate shows the kind of line it would make.
+    Base of the completers for a rule of `.ontrail`. The word before the cursor is the rule
+    being completed, and each candidate shows the kind of rule it would make.
     """
 
     def __init__(
@@ -59,33 +60,33 @@ class MarkerCompleter(Completer):
         cwd: Callable[[], Path],
     ) -> None:
         """
-        `project` returns the directory the lines resolve against, and `cwd` the directory
+        `project` returns the directory the rules resolve against, and `cwd` the directory
         typed paths are read from. Both are called on every completion.
         """
         self.project = project
         self.cwd = cwd
 
     def kind(self, text: str) -> str:
-        """Returns the kind of line the text would make once canonical, or 'invalid'."""
+        """Returns the kind of rule the text would make once canonical, or 'invalid'."""
         project = self.project()
         try:
-            line = canonical(text, project, self.cwd())
+            line = Rule(text).canonicalize(project, self.cwd())
         except (OSError, RuntimeError, ValueError):
             return "invalid"
-        return kind(line, project)
+        return Rule(line).kind(project)
 
     @staticmethod
     def word(document: Document) -> str:
-        """Returns the word before the cursor, which is the line being completed."""
+        """Returns the word before the cursor, which is the rule being completed."""
         return document.get_word_before_cursor(WORD=True)
 
 
-class MarkerPaths(MarkerCompleter):
+class RulePaths(RuleCompleter):
     """
-    Completes the path in a line, which is the part before the first wildcard. A leading '!'
-    is set aside while completing and kept in the line.
+    Completes the path in a rule, which is the part before the first wildcard. A leading '!'
+    is set aside while completing and kept in the rule.
 
-        mark ./da<TAB>    data/    root
+        ontrail add ./da<TAB>    data/    root
     """
 
     def get_completions(
@@ -96,7 +97,7 @@ class MarkerPaths(MarkerCompleter):
         """
         Yields completions for a word that looks like a path: one starting with '/', '~' or
         '.', or holding a '/'. A word with a wildcard gets none, and neither does `.trail`,
-        which can never be marked.
+        which can never be added to `.ontrail`.
         """
         word = self.word(document)
         body = word.removeprefix("!")
@@ -128,12 +129,12 @@ class MarkerPaths(MarkerCompleter):
             )
 
 
-class Extensions(MarkerCompleter):
+class Extensions(RuleCompleter):
     """
-    Completes a word that is not a path to `*.ext`, for each extension that a bundled markers file
-    names and that starts like it. See `extensions`. A leading '!' is kept.
+    Completes a word that is not a path to `*.ext`, for each extension that a preset names and
+    that starts like it. See `extensions`. A leading '!' is kept.
 
-        mark !*.t<TAB>    !*.tsv  !*.txt  !*.tif  !*.tiff    root scope · exclude
+        ontrail add !*.t<TAB>    !*.tsv  !*.txt  !*.tif  !*.tiff    root scope · exclude
     """
 
     def get_completions(
@@ -166,15 +167,15 @@ class Extensions(MarkerCompleter):
                 yield Completion(
                     line,
                     -len(word),
-                    display_meta=kind(line, self.project()),
+                    display_meta=Rule(line).kind(self.project()),
                 )
 
 
-class Rows(MarkerCompleter):
+class Rows(RuleCompleter):
     """
-    Completes to the lines already listed, so taking one back takes a few keys.
+    Completes to the rules already listed, so taking one back takes a few keys.
 
-        unmark da<TAB>    data/*.png    dir scope · not subfolders
+        ontrail remove da<TAB>    data/*.png    dir scope · not subfolders
     """
 
     def __init__(
@@ -183,8 +184,8 @@ class Rows(MarkerCompleter):
         project: Callable[[], Path],
         cwd: Callable[[], Path],
     ) -> None:
-        """`rows` returns the lines listed now. See `MarkerCompleter` for other arguments."""
-        MarkerCompleter.__init__(self, project, cwd)
+        """`rows` returns the rules listed now. See `RuleCompleter` for other arguments."""
+        RuleCompleter.__init__(self, project, cwd)
         self.rows = rows
 
     def get_completions(
@@ -192,7 +193,7 @@ class Rows(MarkerCompleter):
         document: Document,
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
-        """Yields each listed line that starts with the word and is not the word itself."""
+        """Yields each listed rule that starts with the word and is not the word itself."""
         word = self.word(document)
         project = self.project()
         for row in self.rows():
@@ -203,7 +204,7 @@ class Rows(MarkerCompleter):
                 yield Completion(
                     row,
                     -len(word),
-                    display_meta=kind(row, project),
+                    display_meta=Rule(row).kind(project),
                 )
 
 
@@ -213,14 +214,15 @@ def completer(
         cwd: Callable[[], Path],
 ) -> Completer:
     """
-    Returns the completer for lines of `.markers`. It completes paths, the bundled extensions
-    as `*.ext`, and the lines in `rows`. Each candidate shows its kind as its `display_meta`.
+    Returns the completer for rules of `.ontrail`. It completes paths, the extensions of the
+    presets as `*.ext`, and the rules in `rows`. Each candidate shows its kind as its
+    `display_meta`.
 
-        mark cs<TAB>      *.csv    root scope
-        mark ./da<TAB>    data/    root
+        ontrail add cs<TAB>      *.csv    root scope
+        ontrail add ./da<TAB>    data/    root
     """
     completers = [
-        MarkerPaths(project, cwd),
+        RulePaths(project, cwd),
         Extensions(project, cwd),
         Rows(rows, project, cwd),
     ]

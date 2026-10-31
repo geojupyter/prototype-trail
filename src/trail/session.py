@@ -35,6 +35,7 @@ from watchdog.observers import Observer
 from trail.asset import DirAsset
 from trail.event import OPS, DirectoryAccessEvent, WatchdogEvent
 from trail.node import Node
+from trail.offtrail import decide as offtrail_decision
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -146,7 +147,7 @@ class Accesses(UserDict[str, Access]):
     makes an empty one. An empty access is never logged.
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: WatchdogSession) -> None:
         super().__init__()
         self.session = session
 
@@ -265,7 +266,7 @@ class Watches(UserDict[Path, bool]):
     directory schedules its watch, and deleting it unschedules the watch.
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: WatchdogSession) -> None:
         super().__init__()
         self.session = session
         self.handles: dict[Path, ObservedWatch] = {}
@@ -320,7 +321,7 @@ class Handler(FileSystemEventHandler):
     touches the Trail.
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: WatchdogSession) -> None:
         self.session = session
 
     def on_any_event(self, event: FileSystemEvent) -> None:
@@ -337,7 +338,7 @@ class Handler(FileSystemEventHandler):
         These events are dropped:
         - The synthetic move that watchdog reports for each file below a renamed folder, since the
           folder's own move repaths them.
-        - An event below a hidden directory that no watched directory sits at or below.
+        - An event below an ignored directory that no watched directory sits at or below.
 
         A deleted or moved directory first closes the accesses of the dirassets at or below it.
         """
@@ -354,10 +355,10 @@ class Handler(FileSystemEventHandler):
         source = os.fsdecode(event.src_path)
         destination = os.fsdecode(event.dest_path)
         if (
-            self.is_hidden(source, event.is_directory)
+            self.is_ignored_directory(source, event.is_directory)
             and (
                 not destination
-                or self.is_hidden(destination, event.is_directory)
+                or self.is_ignored_directory(destination, event.is_directory)
             )
         ):
             return
@@ -460,43 +461,38 @@ class Handler(FileSystemEventHandler):
         name = os.path.basename(path)
         return children.fullmatch(name) is not None
 
-    def is_hidden(
+    def is_ignored_directory(
             self,
             path: str,
             is_directory: bool,
     ) -> bool:
         """
-        Whether a path is a hidden directory, or is below one, that no watched directory sits at or
-        below. A recursive watch sees inside `.git` and `.venv`, which a walk never enters. Without
-        this check, a `pip install` would track every `*.json` it writes.
+        Whether the path's directory is ignored by the published `.offtrail` rules. Watched paths
+        and their parents are kept. Events inside directory assets are kept for their accesses.
         """
-        if is_directory:
-            directory = path
-        else:
-            directory = path[:path.rfind(os.sep)]
-        marker = os.sep + '.'
-        start = directory.find(marker)
-        # most paths have no hidden directory at all
-        if start == -1:
+        session = self.session
+        decide = session.ignore_rule
+        if decide is None:
             return False
-        covered = self.session.hidden
-        while start != -1:
-            end = directory.find(os.sep, start + 1)
-            if end == -1:
-                end = len(directory)
-            hidden = directory[:end]
-            below = hidden + os.sep
-            if not any(
-                entry == hidden
-                or entry.startswith(below)
-                for entry in covered
-            ):
-                return True
-            start = directory.find(marker, end)
-        return False
+        if session.enclosing(path) is not None:
+            return False
+        directory = Path(path)
+        if not is_directory:
+            directory = directory.parent
+        rule = decide(directory, True)
+        if (
+            rule is None
+            or rule.startswith('!')
+        ):
+            return False
+        out = not any(
+            watched.is_relative_to(directory)
+            for watched in session.protected
+        )
+        return out
 
 
-class Session(Node):
+class WatchdogSession(Node):
     """
     The watching of one Watchdog. It is made on first read of `watchdog.session` and kept. Each
     run, from `start` to `stop`, gets a new observer, its watches, the queue the observer thread
@@ -533,8 +529,9 @@ class Session(Node):
     watches: Watches
     # monotonic seconds of the last event the observer thread received
     last: float
-    # the watched directories at or below a hidden directory, published by the loop
-    hidden: frozenset[str]
+    # the watched paths and the ignore rules, published by the loop
+    protected: frozenset[Path]
+    ignore_rule: Callable[[Path, bool], str | None] | None
     # the root of each dirasset, with its id and its children, published by the loop
     roots: dict[str, tuple[str, re.Pattern[str]]]
     accesses: Accesses
@@ -547,14 +544,14 @@ class Session(Node):
     @classmethod
     def descriptor(cls) -> Self:
         """
-        Returns a Session with no parent, for Watchdog to hold as `session`. It is never started.
-        Each Watchdog's own session is kept in its `__dict__` under the same name.
+        Returns a WatchdogSession with no parent, for Watchdog to hold as `session`. It is never
+        started. Each Watchdog's own session is kept in its `__dict__` under the same name.
 
         Reading `watchdog.session` returns the Watchdog's session, made on first read:
-        >>> Session.__get__
+        >>> WatchdogSession.__get__
 
         Deleting it closes the session and drops it:
-        >>> Session.__delete__
+        >>> WatchdogSession.__delete__
         """
         out = cls.__new__(cls)
         return out
@@ -563,7 +560,7 @@ class Session(Node):
             self,
             instance: Watchdog | None,
             owner: type,
-    ) -> Session:
+    ) -> WatchdogSession:
         """
         The Watchdog's session, made on first read. A forked child inherits a started run but none
         of its threads, so the run is forgotten there without being closed.
@@ -624,7 +621,8 @@ class Session(Node):
         self.observer = Observer()
         self.watches = Watches(self)
         self.last = 0.0
-        self.hidden = frozenset()
+        self.protected = frozenset()
+        self.ignore_rule = None
         self.roots = {}
         self.accesses = Accesses(self)
         self.consumer = None
@@ -709,26 +707,23 @@ class Session(Node):
         Hand the handler what it reads on the observer thread:
 
         - `roots`, the root of each dirasset with its id and its children.
-        - `hidden`, the watched directories at or below a hidden directory.
+        - `protected`, the watched directories and parents of tracked assets.
+        - `ignore_rule`, the rules and Dir roots that decide ignored directories.
 
         Each value is replaced whole, never changed in place.
         """
-        def is_dotted(path: Path) -> bool:
-            out = any(
-                part.startswith('.')
-                for part in path.parts
-            )
-            return out
-
         self.roots = {
             str(asset.path): (asset.id, re.compile(asset.children, re.IGNORECASE))
             for asset in self._trail.assets
             if isinstance(asset, DirAsset)
         }
-        self.hidden = frozenset(
-            str(path)
-            for path in self._parent.wanted()
-            if is_dotted(path)
+        self.protected = frozenset(self._parent.wanted())
+        offtrail = self._trail.offtrail
+        self.ignore_rule = partial(
+            offtrail_decision,
+            rules=tuple(offtrail),
+            project=offtrail.project,
+            roots=frozenset(self._trail.dirs.path2entry),
         )
 
     async def __aenter__(self) -> Self:
@@ -887,7 +882,7 @@ class Session(Node):
             if event.apply(trail) is not None:
                 moved |= event.event_type == "moved"
                 continue
-            # a file appearing that is not tracked is tracked if .markers indicates it
+            # a file appearing that is not tracked is tracked if .ontrail takes it
             if event.event_type in ("created", "moved"):
                 # the file may already be gone by the time the event is applied
                 with suppress(FileNotFoundError):
@@ -913,7 +908,7 @@ class Session(Node):
     def flush(self, asset: Asset) -> None:
         """
         Log a dirasset's accesses that are open or still queued, so they come before the
-        deletion, move or offtrail about to be logged. Nothing is done if the session is not
+        deletion, move or untrack about to be logged. Nothing is done if the session is not
         started.
         """
         if not self:
@@ -1098,7 +1093,7 @@ class Session(Node):
             raise RuntimeError(f"Failed to stop observer {observer}")
 
 
-def _exit(reference: weakref.ref[Session]) -> None:
+def _exit(reference: weakref.ref[WatchdogSession]) -> None:
     """
     Log the accesses a session still holds when the interpreter exits without stop(). A forked
     child, which inherits the session but none of its threads, logs nothing.

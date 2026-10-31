@@ -10,7 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from watchdog.events import FileModifiedEvent, FileOpenedEvent
+import pytest
+from watchdog.events import FileModifiedEvent, FileMovedEvent, FileOpenedEvent
 
 from trail import Trail
 from trail.event import AddAssetEvent, Event, WatchdogEvent
@@ -61,8 +62,8 @@ class TestSession:
     def test_an_event_is_stamped_when_it_arrives(self) -> None:
         with self.workspace() as root:
             csv = root / 'a.csv'
-            trail = Trail(root, markers=None)
-            entry = trail.track(csv)
+            trail = Trail(root, ontrail=None)
+            entry = trail.ontrail(csv)
             session = trail.watchdog.session
             session.prepare(StubLoop())
             moment = datetime(2026, 1, 2, 3, 4, 5, 678000, UTC)
@@ -77,7 +78,7 @@ class TestSession:
 
     def test_one_wakeup_carries_a_burst(self) -> None:
         with self.workspace() as root:
-            trail = Trail(root, markers=None)
+            trail = Trail(root, ontrail=None)
             loop = StubLoop()
             session = trail.watchdog.session
             session.prepare(loop)
@@ -92,11 +93,90 @@ class TestSession:
             session.handler.on_any_event(FileModifiedEvent(str(root / 'a.csv')))
             assert loop.wakeups == 2
 
+    @pytest.mark.parametrize('offtrail', ['', '.*\n!.hidden/\n'])
+    def test_new_files_in_an_included_hidden_folder_are_seen(self, offtrail: str) -> None:
+        with self.workspace() as root:
+            (root / '.ontrail').write_text('./\n*.csv\n', encoding='utf-8')
+            (root / '.offtrail').write_text(offtrail, encoding='utf-8')
+            hidden = root / '.hidden'
+            hidden.mkdir()
+            csv = hidden / 'new.csv'
+
+            async def run() -> None:
+                trail = Trail(root)
+                async with trail.watchdog.session:
+                    csv.write_text('new\n', encoding='utf-8')
+                    await self.until(lambda: csv in trail.assets)
+
+            asyncio.run(run())
+
+    def test_changing_offtrail_updates_the_live_directory_filter(self) -> None:
+        with self.workspace() as root:
+            (root / '.ontrail').write_text('./\n*.csv\n', encoding='utf-8')
+            hidden = root / '.hidden'
+            hidden.mkdir()
+            csv = hidden / 'new.csv'
+
+            async def run() -> None:
+                trail = Trail(root)
+                async with trail.watchdog.session:
+                    trail.offtrail.add('!.hidden/')
+                    csv.write_text('new\n', encoding='utf-8')
+                    await self.until(lambda: csv in trail.assets)
+
+            asyncio.run(run())
+
+    def test_ignored_folders_keep_events_for_explicitly_tracked_assets(self) -> None:
+        with self.workspace() as root:
+            ignored = root / 'ignored'
+            ignored.mkdir()
+            csv = ignored / 'explicit.csv'
+            csv.write_text('old\n', encoding='utf-8')
+            (root / '.offtrail').write_text('ignored/\n', encoding='utf-8')
+
+            async def run() -> None:
+                trail = Trail(root, ontrail=None)
+                asset = trail.ontrail(csv)
+                previous = len(trail.events)
+
+                def modified() -> bool:
+                    out = any(
+                        isinstance(event, WatchdogEvent)
+                        and event.event_type == 'modified'
+                        and event.entry is asset
+                        for event in trail.events.select[previous:]
+                    )
+                    return out
+
+                async with trail.watchdog.session:
+                    csv.write_text('new\n', encoding='utf-8')
+                    await self.until(modified)
+
+            asyncio.run(run())
+
+    def test_a_file_moved_out_of_an_ignored_directory_is_tracked(self) -> None:
+        with self.workspace() as root:
+            (root / '.ontrail').write_text('./\n*.csv\n', encoding='utf-8')
+            hidden = root / '.hidden'
+            hidden.mkdir()
+            source = hidden / 'new.csv'
+            source.write_text('new\n', encoding='utf-8')
+            trail = Trail(root)
+            session = trail.watchdog.session
+            session.prepare(StubLoop())
+            session.publish()
+            destination = root / 'moved.csv'
+            source.rename(destination)
+            session.handler.handle(FileMovedEvent(str(source), str(destination)))
+            session.consume()
+            assert destination in trail.assets
+            session.close()
+
     def test_a_session_left_running_is_stopped_before_the_next(self) -> None:
         with self.workspace() as root:
             csv = root / 'a.csv'
-            trail = Trail(root, markers=None)
-            trail.track(csv)
+            trail = Trail(root, ontrail=None)
+            trail.ontrail(csv)
             observers = []
 
             async def leave() -> None:
@@ -123,7 +203,7 @@ class TestSession:
 
     def test_nothing_after_stop_starts_a_session(self) -> None:
         with self.workspace() as root:
-            (root / '.markers').write_text('./\n*.csv\n', encoding='utf-8')
+            (root / '.ontrail').write_text('./\n*.csv\n', encoding='utf-8')
 
             async def run() -> None:
                 trail = Trail(root)
@@ -151,8 +231,8 @@ class TestSession:
             paths = sorted(root.iterdir())
 
             async def run() -> None:
-                trail = Trail(root, markers=None)
-                trail.track(*paths)
+                trail = Trail(root, ontrail=None)
+                trail.ontrail(*paths)
                 session = trail.watchdog.session
                 handle = session.handler.handle
 
@@ -178,8 +258,8 @@ class TestSession:
             second = root / 'b.csv'
 
             async def run() -> None:
-                trail = Trail(root, markers=None)
-                trail.track(first, second)
+                trail = Trail(root, ontrail=None)
+                trail.ontrail(first, second)
                 trail.watchdog.session.debounce = 0
                 session = trail.watchdog.session
                 handle = session.handler.handle
@@ -225,7 +305,7 @@ class TestSession:
                 waiting = asyncio.create_task(wait())
                 # the watcher is suspended on its flag before the other thread appends
                 await asyncio.sleep(0.05)
-                thread = threading.Thread(target=trail.track, args=(csv,))
+                thread = threading.Thread(target=trail.ontrail, args=(csv,))
                 thread.start()
                 event = await asyncio.wait_for(waiting, 1)
                 thread.join()

@@ -14,7 +14,7 @@ from trail.event import Events
 
 class TestSelect:
     """
-    Five events: a.csv, b.csv and c.csv tracked, a.csv offtrailed, then tracked again under a
+    Five events: a.csv, b.csv and c.csv tracked, a.csv untracked, then tracked again under a
     new asset. Their timestamps are pinned a minute apart from 10:00 UTC today.
     """
 
@@ -25,12 +25,12 @@ class TestSelect:
             root = Path(temporary).resolve()
             for name, size in (("a.csv", 1), ("b.csv", 10), ("c.csv", 100)):
                 (root / name).write_text("x" * size, encoding="utf-8")
-            trail = Trail(root, markers=None)
-            trail.track(root / "a.csv")
-            trail.track(root / "b.csv")
-            trail.track(root / "c.csv")
+            trail = Trail(root, ontrail=None)
+            trail.ontrail(root / "a.csv")
+            trail.ontrail(root / "b.csv")
+            trail.ontrail(root / "c.csv")
             trail.offtrail(root / "a.csv")
-            trail.track(root / "a.csv")
+            trail.ontrail(root / "a.csv")
             start = datetime.now(UTC).replace(hour=10, minute=0, second=0, microsecond=0)
             for position, event in enumerate(trail.events):
                 event.timestamp = start + timedelta(minutes=position)
@@ -85,7 +85,7 @@ class TestSelect:
         with self.session() as (trail, root):
             spaced = root / "d (e).csv"
             spaced.write_text("x", encoding="utf-8")
-            trail.track(spaced)
+            trail.ontrail(spaced)
             events = trail.events
             assert self.positions(trail, events.select(f"src_path='{spaced}'")) == [5]
             assert self.positions(trail, events.select(f'"src_path={spaced}"')) == [5]

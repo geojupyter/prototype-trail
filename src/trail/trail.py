@@ -2,22 +2,20 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import warnings
-from collections import Counter
-from collections.abc import Iterable, Mapping
 from functools import cached_property
 from itertools import islice, takewhile
 from pathlib import Path
 from uuid import uuid4
 
 from trail import fmt
-from trail.asset import Asset, Assets, DirAsset
+from trail.asset import Asset, Assets
 from trail.dir import Dirs
 from trail.entries import Entries
-from trail.event import AddAssetEvent, Events, RemoveAssetEvent, WatchdogEvent
-from trail.markers import Markers, Scopes, canonical, parse
+from trail.event import Events, WatchdogEvent
 from trail.node import Node
+from trail.offtrail import OffTrail
+from trail.ontrail import OnTrail, Scopes
 from trail.util import PathLike, normalize_id
 from trail.watchdog import Watchdog
 
@@ -70,9 +68,10 @@ class JSON(Node):
 
 class Trail(Node):
     """
-    The record of a project. It holds the assets the project tracks, the Dirs `.markers`
-    names, and the events that happened to both. The `.markers` file says which directories
-    are watched and which files in them are tracked automatically.
+    The record of a project. It holds the assets the project tracks, the Dirs `.ontrail`
+    names, and the events that happened to both. The `.ontrail` file says which directories
+    are watched and which files in them are tracked automatically. The `.offtrail` file says
+    what is never tracked automatically.
 
     >>> trail: Trail
     >>> trail
@@ -131,10 +130,10 @@ class Trail(Node):
     @cached_property
     def dirs(self) -> Dirs:
         """
-        Returns a Dirs instance that holds a Dir for each directory `.markers` names, by id and by
-        path, and the root scopes. `Dirs.refresh` keeps them in line with `markers`. It runs after
-        the log is replayed, after each change to `markers`, and when a directory asset is tracked
-        or offtrailed. Each Dir that comes or goes is logged.
+        Returns a Dirs instance that holds a Dir for each directory `.ontrail` names, by id and by
+        path, and the root scopes. `Dirs.refresh` keeps them in line with `ontrail`. It runs after
+        the log is replayed, after each change to `ontrail`, and when a directory asset is tracked
+        or untracked. Each Dir that comes or goes is logged.
 
         >>> self.dirs
         Dirs (2)
@@ -156,7 +155,7 @@ class Trail(Node):
     @property
     def scopes(self) -> Scopes:
         """
-        Returns the root scopes. These are the lines of `.markers` with no directory part, such as
+        Returns the root scopes. These are the rules of `.ontrail` with no directory part, such as
         `*.csv`. They apply at any depth beneath a root. They are built with `dirs`.
 
         >>> self.scopes
@@ -169,7 +168,7 @@ class Trail(Node):
     def entries(self) -> Entries:
         """
         Returns an Entries instance that looks up the assets and the Dirs together, by id or by
-        path. It also holds the paths removed with `offtrail`, and the checks that a scan, a walk
+        path. It also holds the paths removed with `offtrail()`, and the checks that a scan, a walk
         and the watchdog apply to a path.
         """
         out = Entries(self)
@@ -181,18 +180,28 @@ class Trail(Node):
         return JSON(self)
 
     @cached_property
-    def markers(self) -> Markers:
+    def ontrail(self) -> OnTrail:
         """
-        Returns a Markers instance that holds the lines of `.markers`. The lines name the
-        directories to watch and the files to track in them.
+        Returns an OnTrail instance that holds the rules of `.ontrail`. The rules name the
+        directories to watch and the files to track in them. Calling it tracks paths immediately.
 
-        >>> self.markers
-        Markers (3)
+        >>> self.ontrail
+        OnTrail (3)
             ./
             *.csv
             data/*.png
         """
-        out = Markers(self)
+        out = OnTrail(self)
+        out.txt.read()
+        return out
+
+    @cached_property
+    def offtrail(self) -> OffTrail:
+        """
+        Returns an OffTrail instance that holds the rules of `.offtrail`. The rules say what is
+        excluded from automatic tracking before `.ontrail` is checked. Calling it removes assets.
+        """
+        out = OffTrail(self)
         out.txt.read()
         return out
 
@@ -200,8 +209,8 @@ class Trail(Node):
     def events(self):
         """
         Returns an Events instance that holds the events about the Trail's assets and Dirs, in the
-        order they happened. A new Trail logs a Dir for each directory `.markers` names, then the
-        assets the markers pick up.
+        order they happened. A new Trail logs a Dir for each directory `.ontrail` names, then the
+        assets its rules take.
 
         >>> self.events.select[1:3]
         Events (2)
@@ -223,7 +232,7 @@ class Trail(Node):
     def __init__(
         self,
         dir: PathLike | None = None,
-        markers: os.PathLike[str] | str | None = "default",
+        ontrail: os.PathLike[str] | str | None = "default",
     ):
         """
         Open the Trail for a project directory, creating it if it does not exist yet.
@@ -236,22 +245,23 @@ class Trail(Node):
             is opened. If none is found, .trail is created in dir. The search does not climb into
             a directory listed in TRAIL_CEILING_DIRECTORIES.
 
-        markers:
-            The markers to start a new Trail with. Ignored when the Trail already exists on file.
+        ontrail:
+            The preset a new `.ontrail` starts from. Ignored when the Trail already exists on file.
 
             str:
-                The name of a markers file, e.g. 'default'.
+                The name of a preset, e.g. 'default'.
             Path:
-                A markers file on disk.
+                A file of rules on disk.
             None:
-                Start without markers, so nothing is tracked until something is marked or
+                Start without rules, so nothing is tracked until a rule is added or a path is
                 tracked.
 
-        The bundled markers files start with `./`, which watches the project directory.
+        The presets start with `./`, which watches the project directory.
         """
         super().__init__()
         if dir is None:
             self.dir = None
+            self.offtrail.default()
         else:
             dir = Path(dir).expanduser().resolve()
             if dir.name != ".trail":
@@ -262,12 +272,14 @@ class Trail(Node):
                     dir = found
             self.dir = dir
             created = not self.json.path.exists()
-            if created and markers is not None:
-                self.markers.txt.create(markers)
+            if created and ontrail is not None:
+                self.ontrail.txt.create(ontrail)
+            # unlike .ontrail, a missing .offtrail is written on every open
+            self.offtrail.default()
             self.json.load()
             self.events.jsonl.read()
             self.json.dump()
-            # the replay rebuilt the Dirs that were live, and .markers may have changed since
+            # the replay rebuilt the Dirs that were live, and .ontrail may have changed since
             self.dirs.refresh()
             self.assets.scan()
             self.watchdog.session.reconcile()
@@ -305,254 +317,6 @@ class Trail(Node):
         """
         return uuid4().hex
 
-    def track(self, *paths: PathLike) -> Asset | list[Asset]:
-        """
-        Track each path as an asset. A directory is tracked whole, as a directory asset, and its
-        contents are never walked. One path returns its asset. Several paths return a list.
-
-        >>> project: Path
-        >>> self.track(project / 'notes.md')
-        Asset
-            id: 80438f85c910427d9001617c47b7507b
-            path: /tmp/tmpp_bl05lq/notes.md
-            st_size: 2 B
-            st_mtime: 2026-10-02 23:39:37
-        """
-        requested = dict.fromkeys(
-            Path(path)
-            .expanduser()
-            .resolve()
-            for path in paths
-        )
-        tracked = self._track(requested)
-        if len(paths) == 1:
-            return tracked[0]
-        return tracked
-
-    def _track(self, requested: Mapping[Path, str | None]) -> list[Asset]:
-        """
-        Track each path and record the line of `.markers` that picked it up, or None. Returns the
-        assets in the order requested. Refuses Trail metadata, a directory that holds the Trail's
-        own directory, and a file that is part of a dirasset. The watchdog's session is reconciled
-        after anything new is tracked, so a new dirasset is watched and its root is handed to the
-        handler.
-        """
-        made: dict[Path, Asset] = {}
-        for path in requested:
-            if self.entries.is_metadata(path):
-                raise ValueError(f"Cannot track Trail metadata: {path}")
-            # each event logged would count toward it, and so would logging that event
-            if (
-                self.dir is not None
-                and self.dir.is_relative_to(path)
-            ):
-                raise ValueError(f"Cannot track {path} whole, since it holds {self.dir}")
-            holder = self.assets.holder(path)
-            if holder is not None:
-                raise ValueError(f"Cannot track {path}, since it is part of {holder}")
-            if path not in self.assets:
-                made[path] = Asset.from_path(path, trail=self)
-        tracked = []
-        for path, rule in requested.items():
-            asset = self.assets.get(path)
-            if asset is None:
-                fresh = made[path]
-                if isinstance(fresh, DirAsset):
-                    self._absorb(fresh)
-                event = AddAssetEvent(src_path=str(path), rule=rule)
-                asset = event.apply(self)
-                self.events.append(event)
-                # a directory asset is never a Dir, so a Dir at its path goes
-                if asset.is_directory:
-                    self.dirs.refresh()
-            tracked.append(asset)
-        if made:
-            self.watchdog.session.reconcile()
-        return tracked
-
-    def _absorb(self, dirasset: DirAsset) -> None:
-        """
-        Offtrail the tracked assets inside a directory that is about to be tracked whole, if their
-        names match its children. They become part of the directory. A warning says how many, such
-        as "tracking table whole offtrails 1 asset inside it".
-        """
-        root = dirasset.path
-        pattern = re.compile(dirasset.children, re.IGNORECASE)
-        inside = [
-            asset.path
-            for asset in self.assets
-            if asset.path != root
-            and asset.path.is_relative_to(root)
-            and pattern.fullmatch(asset.name)
-        ]
-        if not inside:
-            return
-        count = fmt.plural(len(inside), 'asset')
-        warnings.warn(
-            f"tracking {dirasset.name} whole offtrails {count} inside it",
-            stacklevel=4,
-        )
-        self.offtrail(*inside)
-
-    def offtrail(self, *paths: PathLike) -> Asset | list[Asset]:
-        """Offtrails the specified filesystem paths from the Trail."""
-        requested = dict.fromkeys(
-            Path(path)
-            .expanduser()
-            .resolve()
-            for path in paths
-        )
-        offtrailed = []
-        for path in requested:
-            asset = self.assets.get(path)
-            if asset is None:
-                continue
-            event = RemoveAssetEvent(src_path=str(path))
-            result = event.apply(self)
-            if result is not None:
-                self.events.append(event)
-                offtrailed.append(result)
-                # a Dir may be named at the path the directory asset held
-                if result.is_directory:
-                    self.dirs.refresh()
-        if offtrailed:
-            self.watchdog.session.reconcile()
-        if len(paths) == 1 and offtrailed:
-            return offtrailed[0]
-        return offtrailed
-
-    def mark(
-        self,
-        *texts: str,
-        cwd: PathLike | None = None,
-    ) -> list[str]:
-        """
-        Add a line to `.markers` for each text, then track the files the new lines pick up now. Each
-        text is made canonical first, so 'csv' adds '*.csv'. Relative paths are read from `cwd`, the
-        project directory by default, as the lines of `.markers` are. A line already in `.markers`
-        is not added again. Returns the lines added.
-
-        >>> self.mark('zarr')
-        ['*.zarr']
-        """
-        lines = self._canonical(texts, cwd)
-        project = self.markers.project
-        # every line is checked before any is written
-        bases = {
-            line: parse(line, project)[0]
-            for line in lines
-        }
-        added = self.markers.add(*lines)
-        if not added:
-            return []
-        reached = [
-            bases[line]
-            for line in added
-        ]
-        # a root scope applies beneath every root, so every Dir is walked
-        if None in reached:
-            self.assets.scan()
-        else:
-            self.assets.scan(*reached)
-        return added
-
-    def unmark(
-        self,
-        *texts: str,
-        cwd: PathLike | None = None,
-    ) -> list[str]:
-        """
-        Remove the lines of `.markers` that each text stands for, compared in canonical form.
-        Relative paths are read as `mark` reads them. Assets that a removed line matched stay
-        tracked, and a warning says how many. `offtrail` removes them. Returns the lines removed.
-
-        >>> self.unmark('.zarr')
-        <stdin>:1: UserWarning: unmarking '*.zarr' leaves 1 asset tracked; offtrail removes it
-        ['*.zarr']
-        """
-        markers = self.markers
-        project = markers.project
-        wanted = set(self._canonical(texts, cwd))
-        removing = []
-        for line in markers:
-            try:
-                form = canonical(line, project, project)
-            except ValueError:
-                form = line
-            if (
-                line in wanted
-                or form in wanted
-            ):
-                removing.append(line)
-        if not removing:
-            return []
-        matched = self._matched(removing)
-        removed = markers.discard(*removing)
-        for line in removed:
-            count = matched[line]
-            if not count:
-                continue
-            if count == 1:
-                pronoun = "it"
-            else:
-                pronoun = "them"
-            left = fmt.plural(count, 'asset')
-            message = f"unmarking {line!r} leaves {left} tracked; offtrail removes {pronoun}"
-            warnings.warn(message, stacklevel=2)
-        return removed
-
-    def _canonical(
-        self,
-        texts: Iterable[str],
-        cwd: PathLike | None,
-    ) -> list[str]:
-        """
-        Returns the line of `.markers` each text stands for. Relative paths are read from
-        `cwd`, the project directory by default, as the lines of `.markers` are.
-        """
-        project = self.markers.project
-        if cwd is None:
-            cwd = project
-        cwd = Path(cwd).expanduser().resolve()
-        out = [
-            canonical(text, project, cwd)
-            for text in texts
-        ]
-        return out
-
-    def _matched(self, lines: list[str]) -> Counter[str]:
-        """
-        Returns how many tracked assets each line accounts for. A scope counts the assets it
-        decides. A directory marker counts the assets beneath it.
-
-        >>> self._matched(['./', '*.csv'])
-        Counter({'./': 4, '*.csv': 1})
-        """
-        project = self.markers.project
-        dirs = self.dirs
-        decided = Counter(
-            dirs.match(asset.path)
-            for asset in self.assets
-        )
-        out: Counter[str] = Counter()
-        for line in lines:
-            try:
-                base, pattern = parse(line, project)
-            except ValueError:
-                continue
-            if (
-                base is not None
-                and not pattern
-            ):
-                out[line] = sum(
-                    1
-                    for asset in self.assets
-                    if asset.path.is_relative_to(base)
-                )
-            else:
-                out[line] = decided[line]
-        return out
-
     def _moved(
         self,
         source: Path,
@@ -561,7 +325,7 @@ class Trail(Node):
         """
         Repath every asset under a renamed directory, keeping its ID. Each repath is logged as
         a moved event, so the log replays it. Warns when a Dir under the directory no longer
-        exists. The lines of `.markers` are not rewritten to follow the rename.
+        exists. The rules of `.ontrail` are not rewritten to follow the rename.
         """
         moved = []
         for asset in self.assets:
@@ -587,14 +351,14 @@ class Trail(Node):
                 and not path.exists()
             ):
                 target = destination / path.relative_to(source)
-                message = f"{path} is named by .markers but was moved to {target}"
+                message = f"{path} is named by .ontrail but was moved to {target}"
                 warnings.warn(message, stacklevel=2)
         return moved
 
     def clear(self) -> None:
         """
-        Empties the project record. Every asset is offtrailed, then the log is discarded. The Dirs
-        stay, since `.markers` still names them. `Events.clear` logs them again with their IDs. The
+        Empties the project record. Every asset is untracked, then the log is discarded. The Dirs
+        stay, since `.ontrail` still names them. `Events.clear` logs them again with their IDs. The
         Trail keeps its own id, so the directory stays the same project.
         """
         self.assets.clear()

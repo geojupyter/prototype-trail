@@ -12,7 +12,7 @@ from prompt_toolkit.document import Document
 
 from trail.cli.node import Node
 from trail.collection import attributes
-from trail.markers import MAGIC
+from trail.rule import MAGIC
 from trail.select import SLICE, Select, Selectable
 
 if TYPE_CHECKING:
@@ -143,7 +143,7 @@ class Command(Node):
 
     def tracked(self, pattern: Path) -> list[Path]:
         """
-        Returns the tracked paths that match a glob. The glob is read the way `.markers` reads
+        Returns the tracked paths that match a glob. The glob is read the way `.ontrail` reads
         one, so `*` does not cross a `/` and `**` does.
         """
         spec = PathSpec.from_lines("gitignore", [self.absolute(pattern).as_posix()])

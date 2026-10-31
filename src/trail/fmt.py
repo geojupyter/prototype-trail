@@ -111,8 +111,8 @@ def lines(
     """
     A header with the count, then each line indented under it.
 
-    >>> lines('Markers', ['./', '*.csv', 'data/*.png'])
-    Markers (3)
+    >>> lines('OnTrail', ['./', '*.csv', 'data/*.png'])
+    OnTrail (3)
         ./
         *.csv
         data/*.png

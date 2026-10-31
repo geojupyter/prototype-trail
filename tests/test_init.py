@@ -15,7 +15,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 from trail.cli.init import Paths, Picker, init, offer
-from trail.markers import MARKERS, available
+from trail.ontrail import PRESETS, OnTrail
 from trail.trail import Trail
 
 ENTER = "\r"
@@ -78,98 +78,103 @@ class TestInit:
 
     @staticmethod
     def default() -> list[str]:
-        return (MARKERS / "default.txt").read_text(encoding="utf-8").splitlines()
+        return (PRESETS / "default.txt").read_text(encoding="utf-8").splitlines()
 
-    def test_accepting_the_default_starts_a_trail_with_the_default_markers(self) -> None:
+    def test_accepting_the_default_starts_a_trail_with_the_default_preset(self) -> None:
         with self.workspace() as root:
             trail = self.run(root, ENTER)
             assert trail.dir == root / ".trail"
-            default = (MARKERS / "default.txt").read_text(encoding="utf-8")
-            assert (root / ".markers").read_text(encoding="utf-8") == default
-            assert list(trail.markers) == self.default()
+            default = (PRESETS / "default.txt").read_text(encoding="utf-8")
+            assert (root / ".ontrail").read_text(encoding="utf-8") == default
+            assert (root / ".offtrail").read_text(encoding="utf-8") == ".*\n"
+            assert list(trail.ontrail) == self.default()
             assert trail.dirs[root].root
-            # the default watches the project but marks no files
+            # the default watches the project but takes no files
             assert not trail.assets
 
-    def test_the_arrows_choose_another_marker_set(self) -> None:
+    def test_the_arrows_choose_another_preset(self) -> None:
         with self.workspace() as root:
             trail = self.run(root, DOWN, ENTER)
-            assert list(trail.markers) == (
-                (MARKERS / "general.txt").read_text(encoding="utf-8").splitlines()
+            assert list(trail.ontrail) == (
+                (PRESETS / "general.txt").read_text(encoding="utf-8").splitlines()
             )
             assert root / "top.csv" in trail.assets
 
-    def test_escape_leaves_a_blank_markers_file(self) -> None:
+    def test_escape_leaves_a_blank_ontrail(self) -> None:
         with self.workspace() as root:
-            (root / ".markers").write_text("# mine\n./\n*.md\n", encoding="utf-8")
+            (root / ".ontrail").write_text("# mine\n./\n*.md\n", encoding="utf-8")
             trail = self.run(root, ESCAPE)
-            assert (root / ".markers").read_text(encoding="utf-8") == ""
-            assert not trail.markers
+            assert (root / ".ontrail").read_text(encoding="utf-8") == ""
+            assert not trail.ontrail
             assert not trail.dirs
             assert not trail.assets
 
-    def test_a_typed_path_chooses_a_markers_file_of_ones_own(self) -> None:
+    def test_a_typed_path_chooses_a_file_of_ones_own(self) -> None:
         with self.workspace() as root, TemporaryDirectory() as elsewhere:
-            source = Path(elsewhere) / "mine.markers"
+            source = Path(elsewhere) / "mine.ontrail"
             source.write_text("# mine\n./\n*.md\nfolder/*.csv\n", encoding="utf-8")
             trail = self.run(root, str(source), ENTER)
-            text = (root / ".markers").read_text(encoding="utf-8")
+            text = (root / ".ontrail").read_text(encoding="utf-8")
             assert text == "# mine\n./\n*.md\nfolder/*.csv\n"
             assert root / "notes.md" in trail.assets
             assert root / "folder" / "nested.csv" in trail.assets
             assert root / "top.csv" not in trail.assets
             # an anchored line was written for the project the file came from
-            [warning] = trail.markers.warnings
+            [warning] = trail.ontrail.warnings
             assert "'folder/*.csv' was imported" in warning
 
-    def test_a_typed_directory_offers_the_markers_inside_it(self) -> None:
+    def test_a_typed_directory_offers_the_ontrail_inside_it(self) -> None:
         with self.workspace() as root, TemporaryDirectory() as elsewhere:
-            (Path(elsewhere) / ".markers").write_text("./\n*.md\n", encoding="utf-8")
+            (Path(elsewhere) / ".ontrail").write_text("./\n*.md\n", encoding="utf-8")
             trail = self.run(root, elsewhere, ENTER)
-            assert list(trail.markers) == ["./", "*.md"]
+            assert list(trail.ontrail) == ["./", "*.md"]
 
     def test_a_completed_directory_is_typed_on_into(self) -> None:
         with self.workspace() as root:
             (root / "presets").mkdir()
-            (root / "presets" / "mine.markers").write_text("./\n*.md\n", encoding="utf-8")
+            (root / "presets" / "mine.ontrail").write_text("./\n*.md\n", encoding="utf-8")
             trail = self.run(root, "./pre", TAB, TAB, ENTER, pace=0.1)
-            assert list(trail.markers) == ["./", "*.md"]
+            assert list(trail.ontrail) == ["./", "*.md"]
 
-    def test_an_arrow_after_typing_returns_to_the_markers_files(self) -> None:
+    def test_an_arrow_after_typing_returns_to_the_presets(self) -> None:
         with self.workspace() as root:
             trail = self.run(root, "missing", UP, ENTER)
-            assert list(trail.markers) == self.default()
+            assert list(trail.ontrail) == self.default()
 
-    def test_reinitializing_starts_from_the_default_markers(self) -> None:
+    def test_reinitializing_starts_from_the_default_preset(self) -> None:
         with self.workspace() as root:
-            (root / ".markers").write_text("# mine\n./\n*.md\n", encoding="utf-8")
+            (root / ".ontrail").write_text("# mine\n./\n*.md\n", encoding="utf-8")
             first = Trail(root)
+            ignored = "# mine\n.*\n*.tmp\n"
+            (root / ".offtrail").write_text(ignored, encoding="utf-8")
             events = len(first.events)
             trail = self.run(root / "folder", ENTER)
             assert trail.dir == root / ".trail"
             assert trail.id == first.id
             assert len(trail.events) >= events
-            default = (MARKERS / "default.txt").read_text(encoding="utf-8")
-            assert (root / ".markers").read_text(encoding="utf-8") == default
+            default = (PRESETS / "default.txt").read_text(encoding="utf-8")
+            assert (root / ".ontrail").read_text(encoding="utf-8") == default
+            assert (root / ".offtrail").read_text(encoding="utf-8") == ignored
             # what was tracked before stays tracked
             assert root / "notes.md" in trail.assets
 
-    def test_reinitializing_keeps_the_project_markers_when_they_are_named(self) -> None:
+    def test_reinitializing_keeps_the_projects_ontrail_when_it_is_named(self) -> None:
         with self.workspace() as root:
             mine = "# mine\n./\n*.md\nfolder/*.csv\n"
-            (root / ".markers").write_text(mine, encoding="utf-8")
+            (root / ".ontrail").write_text(mine, encoding="utf-8")
             Trail(root)
-            trail = self.run(root, ".markers", ENTER)
-            assert (root / ".markers").read_text(encoding="utf-8") == mine
+            trail = self.run(root, ".ontrail", ENTER)
+            assert (root / ".ontrail").read_text(encoding="utf-8") == mine
             # its anchored lines belong to this project, so nothing is reported as imported
-            assert not trail.markers.warnings
+            assert not trail.ontrail.warnings
 
     def test_an_interrupt_writes_nothing(self) -> None:
         with self.workspace() as root:
             with pytest.raises(KeyboardInterrupt):
                 self.run(root, INTERRUPT)
             assert not (root / ".trail").exists()
-            assert not (root / ".markers").exists()
+            assert not (root / ".ontrail").exists()
+            assert not (root / ".offtrail").exists()
 
 
 class TestPaths:
@@ -192,12 +197,12 @@ class TestPicker:
     def test_the_preview_follows_the_cursor_and_then_the_typed_path(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            (root / "a.markers").write_text("*.csv\n", encoding="utf-8")
-            (root / "b.markers").write_text("# b\n*.tif\n!\n", encoding="utf-8")
-            (root / "c.markers").write_text("*.md\n", encoding="utf-8")
+            (root / "a.ontrail").write_text("*.csv\n", encoding="utf-8")
+            (root / "b.ontrail").write_text("# b\n*.tif\n!\n", encoding="utf-8")
+            (root / "c.ontrail").write_text("*.md\n", encoding="utf-8")
             options = [
-                ("a", root / "a.markers"),
-                ("b", root / "b.markers"),
+                ("a", root / "a.ontrail"),
+                ("b", root / "b.ontrail"),
             ]
             picker = Picker(options, root)
             assert picker._content() == [("class:kind", "*.csv")]
@@ -211,8 +216,8 @@ class TestPicker:
                 ("class:kind", "*.tif"),
                 ("class:error", "!"),
             ]
-            picker.buffer.text = "c.markers"
-            assert picker.source == root / "c.markers"
+            picker.buffer.text = "c.ontrail"
+            assert picker.source == root / "c.ontrail"
             assert picker.accept()[1] == ["*.md"]
             picker.buffer.text = "missing"
             assert picker.accept() is None
@@ -221,7 +226,7 @@ class TestPicker:
     def test_a_file_longer_than_the_preview_is_cut_off(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            long = root / "long.markers"
+            long = root / "long.ontrail"
             long.write_text("".join(f"x{i}\n" for i in range(200)), encoding="utf-8")
             picker = Picker([("long", long)], root)
             viewport = picker.viewport
@@ -236,13 +241,13 @@ class TestPicker:
             assert texts[0] == "x0"
             assert texts[-1] == f"… {200 - viewport + 1} more lines"
 
-    def test_only_the_markers_files_are_offered_and_the_default_first(self) -> None:
+    def test_only_the_presets_are_offered_and_the_default_first(self) -> None:
         labels = [
             label
             for label, _ in offer()
         ]
         assert labels[0] == "default"
-        assert sorted(labels) == available()
+        assert sorted(labels) == OnTrail.available()
 
 
 if __name__ == "__main__":

@@ -28,7 +28,7 @@ CLASSES: Final[dict[str, str]] = {
     "error": "ansired bold",
     "event": "ansiblue",
     "event.tracked": "ansigreen bold",
-    "event.offtrailed": "ansired bold",
+    "event.untracked": "ansired bold",
     "event.watched": "ansigreen bold",
     "event.unwatched": "ansired bold",
     "event.created": "ansigreen",
@@ -45,7 +45,7 @@ STYLE: Final = Style.from_dict(CLASSES)
 # the style of a record heading, keyed by the verb from `Renderer.verb`
 VERB_STYLES: Final[dict[str, str]] = {
     "tracked": "class:event.tracked",
-    "offtrailed": "class:event.offtrailed",
+    "untracked": "class:event.untracked",
     "watched": "class:event.watched",
     "unwatched": "class:event.unwatched",
     "created": "class:event.created",

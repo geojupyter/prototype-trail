@@ -28,14 +28,14 @@ class TestWatches:
 
     @staticmethod
     @contextmanager
-    def workspace(*markers: str) -> Iterator[Path]:
+    def workspace(*rules: str) -> Iterator[Path]:
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             text = ''.join(
-                f'{marker}\n'
-                for marker in markers
+                f'{rule}\n'
+                for rule in rules
             )
-            (root / '.markers').write_text(text, encoding='utf-8')
+            (root / '.ontrail').write_text(text, encoding='utf-8')
             (root / 'data' / 'raw').mkdir(parents=True)
             yield root
 
@@ -97,7 +97,7 @@ class TestWatches:
             outside = Path(elsewhere).resolve()
             (outside / 'far.csv').write_text('a\n', encoding='utf-8')
             trail = Trail(root)
-            trail.track(outside / 'far.csv')
+            trail.ontrail(outside / 'far.csv')
             # a Dir's parent is watched to see the Dir renamed, and an asset's to see the asset
             assert trail.watchdog.desired() == {
                 root / 'data': True,
@@ -155,7 +155,7 @@ class TestWatches:
             cube = outside / 'cube.zarr'
             cube.mkdir()
             trail = Trail(root)
-            trail.track(cube)
+            trail.ontrail(cube)
             assert trail.watchdog.desired() == {
                 root: True,
                 root.parent: False,
@@ -185,8 +185,8 @@ class TestWatches:
             kept = outside / 'kept.zarr'
             kept.mkdir()
             vanished = outside / 'vanished.zarr'
-            trail = Trail(root, markers=None)
-            asset = trail.track(kept)
+            trail = Trail(root, ontrail=None)
+            asset = trail.ontrail(kept)
             trail.watchdog.session.debounce = 0
             desired = trail.watchdog.desired()
             # the directory is named by desired() and gone by the time its watch is placed

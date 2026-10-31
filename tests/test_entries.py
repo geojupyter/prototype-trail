@@ -18,7 +18,7 @@ class TestEntries:
     def workspace() -> Iterator[Path]:
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            (root / '.markers').write_text('./\n*.csv\ndata/\n', encoding='utf-8')
+            (root / '.ontrail').write_text('./\n*.csv\ndata/\n', encoding='utf-8')
             (root / 'data').mkdir()
             (root / 'data' / 'a.csv').write_text('a\n', encoding='utf-8')
             (root / 'new.csv').write_text('b\n', encoding='utf-8')
@@ -76,14 +76,16 @@ class TestEntries:
             assert csv in restored.entries.untracked
             assert csv not in restored.assets
             # tracked again, the path is no longer untracked
-            restored.track(csv)
+            restored.ontrail(csv)
             assert csv not in restored.entries.untracked
 
-    def test_metadata_is_the_trail_directory_and_what_it_holds(self) -> None:
+    def test_metadata_is_the_trail_directory_and_the_files_of_rules(self) -> None:
         with self.workspace() as root:
             trail = Trail(root)
             assert trail.entries.is_metadata(root / '.trail')
             assert trail.entries.is_metadata(root / '.trail' / 'events.jsonl')
+            assert trail.entries.is_metadata(root / '.ontrail')
+            assert trail.entries.is_metadata(root / '.offtrail')
             assert not trail.entries.is_metadata(root / 'new.csv')
             # a Trail with no directory has no metadata
             assert not Trail().entries.is_metadata(root / '.trail')

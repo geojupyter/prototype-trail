@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from trail import fmt
 from trail.node import Node
-from trail.session import Session
+from trail.session import WatchdogSession
 
 if TYPE_CHECKING:
     from trail.trail import Trail
@@ -15,7 +15,7 @@ class Watchdog(Node):
     """
     Decides which directories `session` watches, from the Trail's Dirs and assets. Every Dir and
     every dirasset is watched recursively. The parent of each Dir and asset is watched alone. The
-    handler drops what a recursive watch sees inside `.git` and `.venv`, which a walk never enters.
+    handler skips directories `.offtrail` ignores unless an explicitly watched path needs them.
 
     >>> trail: Trail
     >>> trail.watchdog
@@ -30,7 +30,7 @@ class Watchdog(Node):
     _parent: Trail
     # directories listed by __repr__ before the remainder is summarized
     repr_limit = 10
-    session = Session.descriptor()
+    session = WatchdogSession.descriptor()
 
     def __repr__(self) -> str:
         """

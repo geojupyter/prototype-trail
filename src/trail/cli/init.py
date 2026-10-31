@@ -31,14 +31,11 @@ from prompt_toolkit.layout.processors import BeforeInput
 
 from trail import fmt
 from trail.cli.console import Console
-from trail.cli.marker_completion import Paths
 from trail.cli.render import Renderer
+from trail.cli.rule_completion import Paths
 from trail.cli.theme import STYLE
-from trail.markers import (
-    MARKERS,
-    available,
-    kind,
-)
+from trail.ontrail import PRESETS, OnTrail
+from trail.rule import Rule
 from trail.trail import Trail
 
 __all__ = [
@@ -49,7 +46,7 @@ __all__ = [
 ]
 
 WEBSITE: Final = "https://geojupyter.github.io/trail"
-DEFAULT_MARKERS: Final = "default"
+DEFAULT_PRESET: Final = "default"
 
 
 def say(
@@ -64,7 +61,7 @@ def hint(*lines: str) -> None:
     """
     Print each line as a dim bullet under a question.
 
-      - You can always edit the `.markers` text file afterward.
+      - You can always edit the `.ontrail` text file afterward.
     """
     for line in lines:
         say(f"  - {line}", "class:info")
@@ -94,9 +91,9 @@ def tabbing() -> KeyBindings:
 
 class Picker:
     """
-    Lets the user choose the markers file that a new `.markers` starts from. The bundled files are
-    listed on the left, with a preview of the selected one on the right. Typing a path previews the
-    user's own markers file instead. A file longer than the preview is cut off, since the editor
+    Lets the user choose the preset that a new `.ontrail` starts from. The presets are listed on
+    the left, with a preview of the selected one on the right. Typing a path previews a file of
+    the user's own instead. A file longer than the preview is cut off, since the editor
     that follows shows every line.
 
     - <UP> and <DOWN> move through the list.
@@ -140,13 +137,13 @@ class Picker:
     @property
     def custom(self) -> Path | None:
         """
-        Returns the markers file at the typed path, or None if there is none. A directory
-        means the `.markers` file inside it.
+        Returns the file of rules at the typed path, or None if there is none. A directory
+        means the `.ontrail` file inside it.
         """
         try:
             path = (self.root / Path(self.typed).expanduser()).resolve()
             if path.is_dir():
-                path = path / ".markers"
+                path = path / ".ontrail"
             if path.is_file():
                 return path
         except (RuntimeError, ValueError):
@@ -181,7 +178,7 @@ class Picker:
         source = self.source
         if source is None:
             if self.typed:
-                self.error = f"no markers file at {self.typed}"
+                self.error = f"no file at {self.typed}"
             else:
                 self.error = "type a path, or press <ESCAPE> to go without"
             return None
@@ -198,8 +195,8 @@ class Picker:
 
     def style(self, line: str) -> str:
         """
-        Returns the style for one line of a markers file. Comments and blank lines are `info`,
-        invalid lines are `error`, and markers are `kind`.
+        Returns the style for one line of a file of rules. Comments and blank lines are `info`,
+        invalid lines are `error`, and rules are `kind`.
         """
         stripped = line.strip()
         if (
@@ -207,13 +204,13 @@ class Picker:
             or stripped.startswith("#")
         ):
             return "class:info"
-        if kind(stripped, self.root) == "invalid":
+        if Rule(stripped).kind(self.root) == "invalid":
             return "class:error"
         return "class:kind"
 
     def _listing(self) -> StyleAndTextTuples:
         """
-        Returns the list of markers files with the selected one highlighted. The highlight is
+        Returns the list of presets with the selected one highlighted. The highlight is
         hidden while a path is typed.
         """
         out: StyleAndTextTuples = []
@@ -238,7 +235,7 @@ class Picker:
         """
         source = self.source
         if source is None:
-            return [("class:info", "no markers file at this path")]
+            return [("class:info", "no file at this path")]
         try:
             lines = source.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError) as error:
@@ -374,7 +371,7 @@ class Picker:
         def _keep(event: KeyPressEvent) -> None:
             event.current_buffer.complete_state = None
 
-        # and escape takes it back, rather than turning every markers file down
+        # and escape takes it back, rather than turning every preset down
         @bindings.add("escape", filter=has_completions, eager=True)
         def _revert(event: KeyPressEvent) -> None:
             event.current_buffer.cancel_completion()
@@ -409,7 +406,7 @@ class Picker:
         Returns the picker application. It is erased when it exits, leaving only the line
         `init` prints about the choice.
 
-          markers from ~/Downloads/geospatial.txt
+          rules from ~/Downloads/geospatial.txt
         """
         return Application(
             layout=self.layout,
@@ -420,20 +417,20 @@ class Picker:
 
     def run(self) -> tuple[str, list[str]] | None:
         """
-        Run the picker. Returns the label and lines of the chosen file, or None if markers
-        were rejected.
+        Run the picker. Returns the label and lines of the chosen file, or None if every preset
+        was turned down.
         """
         return self.application.run()
 
 
 def offer() -> list[tuple[str, Traversable]]:
-    """Returns the bundled markers files for the picker, with the default first."""
+    """Returns the presets for the picker, with the default first."""
     names = sorted(
-        available(),
-        key=lambda name: (name != DEFAULT_MARKERS, name),
+        OnTrail.available(),
+        key=lambda name: (name != DEFAULT_PRESET, name),
     )
     out: list[tuple[str, Traversable]] = [
-        (name, MARKERS / f"{name}.txt")
+        (name, PRESETS / f"{name}.txt")
         for name in names
     ]
     return out
@@ -449,13 +446,14 @@ def init(root: Path) -> Trail:
     `root`. Nothing is written until every question is answered, so an interrupt leaves the project
     untouched.
 
-    Re-initializing rewrites `.markers` and tracks what the new lines pick up. The log and
-    everything already tracked are kept.
+    Re-initializing rewrites `.ontrail` and tracks what the new rules take. `.offtrail`, the log
+    and everything already tracked are kept.
 
     Trail started in ~/project 🌲
-      markers: ./ *.csv *.txt *.json
+      ontrail: ./ *.csv *.txt *.json
+      offtrail: .*
       tracked: 2 assets in 1 dir
-    Edit /home/user/project/.markers to change the markers.
+    Edit .ontrail and .offtrail in ~/project to change the rules.
     """
     existing = Trail.locate(root)
     if existing is None:
@@ -476,8 +474,8 @@ def init(root: Path) -> Trail:
         say(f"Re-initializing the Trail at {Renderer.home(home)}", "class:info")
     say("")
 
-    path = home / ".markers"
-    say("Markers say which folders to check and which files to automatically track in them. 🪧", "bold")
+    path = home / ".ontrail"
+    say(".ontrail says which folders to check and which files to automatically track in them. 🪧", "bold")
     hint(
         "A line ending in `/` is a folder to track.",
         "A line with an extension like `*.csv` tracks those files in the tracked folders.",
@@ -486,22 +484,29 @@ def init(root: Path) -> Trail:
         "A line with `./` tracks the project directory itself.",
     )
     say("")
-    say("Let's pick a marker set to start from 🪨:", "bold")
+    say(".offtrail excludes paths from automatic tracking before .ontrail is checked. 🚧", "bold")
     hint(
-        "<UP> and <DOWN> to browse marker sets.",
+        "It starts with `.*`, which skips dotfiles and hidden folders such as `.git`.",
+        "Its lines are written as in .ontrail, and win over it.",
+        "A line starting with `!` e.g. `!.env` hands a path back to .ontrail.",
+    )
+    say("")
+    say("Let's pick a preset for .ontrail to start from 🪨:", "bold")
+    hint(
+        "<UP> and <DOWN> to browse presets.",
         "<ENTER> to choose one.",
-        "Enter a path to load your own markers file.",
-        "<ESCAPE> to start with no markers.",
+        "Enter a path to start from a file of your own.",
+        "<ESCAPE> to start with no rules.",
     )
     say("")
     picker = Picker(offer(), root)
     chosen = picker.run()
     if chosen is None:
         lines = []
-        say("  no markers", "class:kind")
+        say("  no rules", "class:kind")
     else:
         lines = chosen[1]
-        say(f"  markers from {chosen[0]}", "class:kind")
+        say(f"  rules from {chosen[0]}", "class:kind")
     imported = picker.custom not in (None, path)
     say("")
 
@@ -512,20 +517,21 @@ def init(root: Path) -> Trail:
         for line in lines
     )
     path.write_text(text, encoding="utf-8")
-    # opening the Trail scans for what the markers indicate; naming .trail itself opens the
+    # opening the Trail scans for what the rules take; naming .trail itself opens the
     # directory chosen, even nested in another Trail
-    trail = Trail(home / ".trail", markers=None)
+    trail = Trail(home / ".trail", ontrail=None)
     # the anchored lines of a file from elsewhere were written for the project it came from,
     # so the warnings name each one
-    trail.markers.imported = imported
+    trail.ontrail.imported = imported
 
     say(f"Trail started in {Renderer.home(home)} 🌲", "bold")
-    say(f"  markers: {' '.join(trail.markers) or 'none'}", "class:info")
+    say(f"  ontrail: {' '.join(trail.ontrail) or 'none'}", "class:info")
+    say(f"  offtrail: {' '.join(trail.offtrail) or 'none'}", "class:info")
     assets = fmt.plural(len(trail.assets), "asset")
     dirs = fmt.plural(len(trail.dirs), "dir")
     say(f"  tracked: {assets} in {dirs}", "class:info")
-    for warning in trail.markers.warnings:
+    for warning in (*trail.ontrail.warnings, *trail.offtrail.warnings):
         say(f"  {warning}", "class:error")
-    say(f"Edit {path} to change the markers.")
+    say(f"Edit .ontrail and .offtrail in {Renderer.home(home)} to change the rules.")
     say("")
     return trail

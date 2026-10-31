@@ -163,7 +163,7 @@ class AddAssetEvent(Event):
     """
     A resource being tracked. The size and mtime recorded here are the baseline for later comparison
     with the filesystem. They are sampled once and not refreshed on replay. `rule` is the line of
-    `.markers` that picked the resource up, or None if it was tracked explicitly.
+    `.ontrail` that took the resource, or None if it was tracked explicitly.
 
     >>> trail: Trail
     >>> trail.events.select[2:3]
@@ -202,7 +202,7 @@ class AddAssetEvent(Event):
             asset = Asset.from_path(self.src_path, trail=trail)
         self.entry = asset
 
-        asset.track()
+        asset._register()
         self.is_directory = asset.is_directory
         if not replay:
             self._stat(asset)
@@ -226,8 +226,8 @@ class AddAssetEvent(Event):
 @dataclass(kw_only=True, slots=True, repr=False)
 class RemoveAssetEvent(Event):
     """
-    An asset being offtrailed. Its path is added to `trail.entries.untracked`, so `.markers` does
-    not pick it up again.
+    An asset being untracked. Its path is added to `trail.entries.untracked`, so `.ontrail` does
+    not take it again.
 
     >>> trail: Trail
     >>> trail.events.select[-1:]
@@ -248,7 +248,7 @@ class RemoveAssetEvent(Event):
         replay: bool = False,
     ) -> Asset | None:
         """
-        Offtrail the asset at `src_path` and return it. Returns None if nothing is tracked
+        Untrack the asset at `src_path` and return it. Returns None if nothing is tracked
         there.
         """
         if replay:
@@ -258,7 +258,7 @@ class RemoveAssetEvent(Event):
         if asset is None:
             return None
         self.entry = asset
-        asset.offtrail()
+        asset._unregister()
         trail.entries.untracked.add(asset.path)
         return asset
 
@@ -266,8 +266,8 @@ class RemoveAssetEvent(Event):
 @dataclass(kw_only=True, slots=True, repr=False)
 class AddDirEvent(Event):
     """
-    A directory becoming a Dir, since a line of `.markers` names it. `rule` is the first line
-    that names it. The Dir's root and scopes are not logged, since `.markers` holds them.
+    A directory becoming a Dir, since a rule of `.ontrail` names it. `rule` is the first rule
+    that names it. The Dir's root and scopes are not logged, since `.ontrail` holds them.
 
     >>> trail: Trail
     >>> trail.events.select[:1]
@@ -296,17 +296,17 @@ class AddDirEvent(Event):
         directory = self.entry
         if directory is None:
             raise ValueError("An AddDirEvent is applied with its Dir already set")
-        directory.track()
+        directory._register()
         return directory
 
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class RemoveDirEvent(Event):
     """
-    A Dir that no line of `.markers` names any more. Its ID stays in the log, with its history.
+    A Dir that no rule of `.ontrail` names any more. Its ID stays in the log, with its history.
 
     >>> trail: Trail
-    >>> trail.unmark('raw/')
+    >>> trail.ontrail.remove('raw/')
     ['raw/']
     >>> trail.events.select[-1:]
     Events (1)
@@ -333,7 +333,7 @@ class RemoveDirEvent(Event):
         if directory is None:
             return None
         self.entry = directory
-        directory.offtrail()
+        directory._unregister()
         return directory
 
 
@@ -369,7 +369,7 @@ class WatchdogEvent(Event):
         """
         Apply the event to the asset or the Dir it is about, log it, and return that entry.
         Returns None for an event about anything else. A move repaths an asset. A Dir keeps
-        its path, since its line in `.markers` still names it. On replay, the move or creation
+        its path, since its rule in `.ontrail` still names it. On replay, the move or creation
         is applied to the asset the record names, and nothing is applied to a Dir.
         """
         if replay:
@@ -380,7 +380,7 @@ class WatchdogEvent(Event):
                 if self.event_type == "moved" and self.dest_path:
                     entry.move(self.dest_path)
                 elif self.event_type == "created":
-                    entry.track()
+                    entry._register()
             return entry
 
         if self.event_type not in EVENT_TYPES:
@@ -406,7 +406,7 @@ class WatchdogEvent(Event):
         if isinstance(entry, Asset):
             if destination is None:
                 if self.event_type == "created":
-                    entry.track()
+                    entry._register()
             elif entry.path != destination:
                 entry.move(destination)
         self.entry = entry
@@ -825,7 +825,7 @@ class Events(Collection[str, Event]):
 
     def clear(self) -> None:
         """
-        Empty the log. Accesses still open are dropped, not logged. Each Dir named in `.markers` is
+        Empty the log. Accesses still open are dropped, not logged. Each Dir named in `.ontrail` is
         logged again with its ID. Calling this on a selection only empties the selection.
         """
         trail = self._trail

@@ -73,10 +73,10 @@ class Entry(Node):
         """Events associated with the entry."""
         return {}
 
-    def track(self) -> Self:
+    def _register(self) -> Self:
         """
         Hold the entry in its collection and return it. Nothing is logged. An older copy with
-        the same id, or another entry at the same path, is offtrailed first.
+        the same id, or another entry at the same path, is removed first.
         """
         collection = self._parent
         if collection is None:
@@ -95,11 +95,11 @@ class Entry(Node):
                 or old is self
             ):
                 continue
-            old.offtrail()
+            old._unregister()
         collection[self.id] = self
         return self
 
-    def offtrail(self) -> None:
+    def _unregister(self) -> None:
         """Remove the entry from the collection holding it. Nothing is logged."""
         collection = self._parent
         if (

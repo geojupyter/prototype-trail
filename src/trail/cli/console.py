@@ -36,7 +36,7 @@ from trail.trail import Trail
 class Console(Node):
     """
     The interactive session. Events the watchdog records are printed to the feed as they happen. The
-    command bar at the bottom runs commands such as `track` and `events`.
+    command bar at the bottom runs commands such as `ontrail` and `events`.
 
     prompt_toolkit draws only the header and the command bar. The feed above them is ordinary
     terminal output, so scrollback, text selection and the scrollbar work as usual. The alternate
@@ -114,7 +114,7 @@ class Console(Node):
         calls it.
 
         >>> self.commands
-        Commands (track, offtrail, mark, unmark, markers, assets, dirs, events, clear, help, ...)
+        Commands (ontrail, offtrail, assets, dirs, events, clear, help, ...)
         >>> self.commands.find('ev')
         EventsCommand('events')
         """
@@ -127,9 +127,9 @@ class Console(Node):
         is completed against the command names. The rest of the line goes to that command's
         `complete`:
 
-        - `track` completes filesystem paths.
+        - `ontrail` completes filesystem paths.
         - `offtrail` completes tracked paths.
-        - `mark` and `unmark` complete paths and extensions.
+        - Their `add` and `remove` actions complete paths, extensions and rules.
         - Listings complete field names.
 
         CommandCompleter is a prompt_toolkit Completer, not a Node, so it holds the console
@@ -263,7 +263,7 @@ class Console(Node):
         Run one line from the command bar. The line is echoed to the feed, then passed to the
         command that its first word names. Events the command recorded are printed right after.
         Errors and warnings from the command are printed to the feed, and errors do not propagate.
-        For example, `unmark` warns about what stays tracked.
+        For example, `ontrail remove` warns about what stays tracked.
 
         > assets
         assets (2 of 2)
@@ -430,7 +430,7 @@ class Run(Node):
         - The Trail id and the project root.
         - With `--nodir`, a line saying events are held in memory.
         - The asset, Dir and event counts.
-        - Any warnings about `.markers`.
+        - Any warnings about `.ontrail` and `.offtrail`.
         - A usage hint, then a blank line before the events.
 
         🍃🍄🌲 Welcome back to Trail! 🌲🍄🍃
@@ -452,7 +452,7 @@ class Run(Node):
             f"  dirs {len(trail.dirs)}"
             f"  events {len(trail.events)}"
         )
-        for warning in trail.markers.warnings:
+        for warning in (*trail.ontrail.warnings, *trail.offtrail.warnings):
             feed.error(warning)
         feed.info("type 'help' for help")
         feed.blank()

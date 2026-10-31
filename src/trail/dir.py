@@ -9,7 +9,8 @@ from trail import fmt
 from trail.asset import DirAsset
 from trail.entry import Entry, EntryCollection
 from trail.event import AddDirEvent, RemoveDirEvent
-from trail.markers import Scopes, parse
+from trail.ontrail import Scopes
+from trail.rule import Rule
 
 if TYPE_CHECKING:
     from trail.trail import Trail
@@ -18,8 +19,8 @@ if TYPE_CHECKING:
 @dataclass(kw_only=True, eq=False, repr=False)
 class Dir(Entry):
     """
-    A directory named by `.markers`. The log holds its ID and its history. Whether it is a root, and
-    its scopes, are taken from `.markers` each time the lines change. A root takes the root scopes
+    A directory named by `.ontrail`. The log holds its ID and its history. Whether it is a root, and
+    its scopes, are taken from `.ontrail` each time the rules change. A root takes the root scopes
     at any depth beneath it. Its own scopes are shown relative to it.
 
     >>> trail: Trail
@@ -95,7 +96,7 @@ def build(
         excluded: Collection[Path] = (),
 ) -> tuple[dict[Path, Dir], Scopes]:
     """
-    Returns the directories that the lines of `.markers` name, in the order they are first named,
+    Returns the directories that the rules of `.ontrail` name, in the order they are first named,
     and the root scopes among the lines.
 
     These are left out:
@@ -110,7 +111,7 @@ def build(
     Scopes (1)
         *.csv
     """
-    # in the order .markers first names each directory, so reprs and walks are stable
+    # in the order .ontrail first names each directory, so reprs and walks are stable
     order: dict[Path, None] = {}
     roots: set[Path] = set()
     scoped: dict[Path, list[str]] = {}
@@ -118,7 +119,7 @@ def build(
     unanchored: list[str] = []
     for line in lines:
         try:
-            base, pattern = parse(line, project)
+            base, pattern = Rule(line).parse(project)
         except ValueError:
             continue
         if base is None:
@@ -153,7 +154,7 @@ def match(
         scopes: Scopes,
 ) -> str | None:
     """
-    Returns the line of `.markers` that decides a path, or None. The dir scopes of the path's
+    Returns the rule of `.ontrail` that decides a path, or None. The dir scopes of the path's
     parents are checked first, deepest first, as git ranks nested .gitignore files. If none decides,
     the root scopes are checked beneath the nearest root.
 
@@ -184,9 +185,9 @@ def match(
 
 class Dirs(EntryCollection[Dir]):
     """
-    The directories `.markers` names, by id and by path, plus the root scopes, which apply beneath
+    The directories `.ontrail` names, by id and by path, plus the root scopes, which apply beneath
     every root. A subfolder of a root has no Dir of its own, since its ancestor covers it. So this
-    is not the set of watched directories. `refresh` keeps the Dirs in line with `.markers` and logs
+    is not the set of watched directories. `refresh` keeps the Dirs in line with `.ontrail` and logs
     each Dir that comes or goes.
 
     >>> trail: Trail
@@ -210,7 +211,7 @@ class Dirs(EntryCollection[Dir]):
     entry_type = Dir
 
     def __init__(self, parent: Trail | None = None) -> None:
-        """Start with no Dirs and no root scopes. `refresh` takes them from `.markers`."""
+        """Start with no Dirs and no root scopes. `refresh` takes them from `.ontrail`."""
         EntryCollection.__init__(self, parent)
         self.scopes = Scopes()
 
@@ -227,25 +228,25 @@ class Dirs(EntryCollection[Dir]):
         return '\n'.join(lines)
 
     def clear(self) -> None:
-        """Refuses, since the Dirs come from `.markers`. `Trail.unmark` removes one."""
-        msg = 'Dirs come from .markers, so a Dir is removed by unmarking its lines'
+        """Refuses, since the Dirs come from `.ontrail`. `trail.ontrail.remove` removes one."""
+        msg = 'Dirs come from .ontrail, so a Dir goes when its rules are removed from .ontrail'
         raise TypeError(msg)
 
     def refresh(self) -> None:
         """
-        Bring the live Dirs in line with `.markers`. A directory that a line names gets a Dir,
+        Bring the live Dirs in line with `.ontrail`. A directory that a rule names gets a Dir,
         logged as an AddDirEvent. A Dir that no line names is removed and logged as a
-        RemoveDirEvent. A Dir that stays keeps its ID and takes its root and scopes from the lines.
+        RemoveDirEvent. A Dir that stays keeps its ID and takes its root and scopes from the rules.
         Directory assets are never Dirs.
         """
         trail = self._trail
-        markers = trail.markers
+        ontrail = trail.ontrail
         excluded = {
             asset.path
             for asset in trail.assets
             if asset.is_directory
         }
-        built, self.scopes = build(markers, markers.project, excluded)
+        built, self.scopes = build(ontrail, ontrail.project, excluded)
         for directory in self:
             if directory.path not in built:
                 self._remove(directory)
@@ -285,12 +286,12 @@ class Dirs(EntryCollection[Dir]):
         trail.events.append(event)
 
     def _rule(self, path: Path) -> str | None:
-        """Returns the first line of `.markers` that names a directory, or None."""
-        markers = self._trail.markers
-        project = markers.project
-        for line in markers:
+        """Returns the first rule of `.ontrail` that names a directory, or None."""
+        ontrail = self._trail.ontrail
+        project = ontrail.project
+        for line in ontrail:
             try:
-                base, _ = parse(line, project)
+                base, _ = Rule(line).parse(project)
             except ValueError:
                 continue
             if base == path:
@@ -299,7 +300,7 @@ class Dirs(EntryCollection[Dir]):
 
     def match(self, path: Path) -> str | None:
         """
-        Returns the line of `.markers` that decides a path, or None if none does. See `match`.
+        Returns the rule of `.ontrail` that decides a path, or None if none does. See `match`.
 
         >>> project: Path
         >>> self.match(project / 'data' / 'b.png')
@@ -309,7 +310,7 @@ class Dirs(EntryCollection[Dir]):
 
     def tracks(self, path: Path) -> bool:
         """
-        Whether `.markers` says to track the path. It does if a line other than an exclusion
+        Whether `.ontrail` says to track the path. It does if a rule other than an exclusion
         decides it.
 
         >>> project: Path

@@ -79,7 +79,7 @@ class Collection[K, V: Record](Node):
 
     def __iter__(self) -> Iterator[V]:
         # the records are taken up front, so that removing one while iterating over them, as
-        # offtrailing does, does not take the records after it along with it
+        # untracking does, does not take the records after it along with it
         records = [
             self.data[identifier]
             for identifier in self.ids

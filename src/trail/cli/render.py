@@ -244,8 +244,8 @@ class Renderer(Node):
     def verb(event: Event) -> str:
         """
         Returns the verb for an event. The verb sets the heading colour.
-        - AddAssetEvent is `tracked`, or `discovered` if a line of `.markers` picked the asset up.
-        - RemoveAssetEvent is `offtrailed`.
+        - AddAssetEvent is `tracked`, or `discovered` if a rule of `.ontrail` took the asset.
+        - RemoveAssetEvent is `untracked`.
         - AddDirEvent is `watched`.
         - RemoveDirEvent is `unwatched`.
         - WatchdogEvent uses its `event_type`. This includes an access to a dirasset.
@@ -256,7 +256,7 @@ class Renderer(Node):
                 return "discovered"
             return "tracked"
         if isinstance(event, RemoveAssetEvent):
-            return "offtrailed"
+            return "untracked"
         if isinstance(event, AddDirEvent):
             return "watched"
         if isinstance(event, RemoveDirEvent):

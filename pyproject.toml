@@ -21,15 +21,19 @@ maintainers = [
 [project.scripts]
 trail = "trail.cli:main"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
 include = [
     "trail",
     "trail.*",
 ]
 
 [tool.setuptools.package-data]
-trail = ["markers/*.txt"]
+trail = ["ontrail/*.txt", "offtrail/*.txt"]
 
 [dependency-groups]
 dev = [

@@ -25,7 +25,7 @@ class Entries(Node):
 
     def __init__(self, parent: Trail | None = None) -> None:
         Node.__init__(self, parent)
-        # the paths removed with `Trail.offtrail`. A scan does not pick them up again
+        # the paths removed with `OffTrail.__call__`. A scan does not pick them up again
         self.untracked: set[Path] = set()
 
     @overload
@@ -110,29 +110,39 @@ class Entries(Node):
         return out
 
     def is_metadata(self, path: Path) -> bool:
-        """Whether a path is Trail metadata: `.trail` or anything inside it."""
-        directory = self._trail.dir
+        """
+        Whether a path is Trail metadata: `.trail` or anything inside it, `.ontrail`, or
+        `.offtrail`. A Trail without a directory has none.
+        """
+        trail = self._trail
+        directory = trail.dir
+        if directory is None:
+            return False
+        files = (
+            trail.ontrail.txt.path,
+            trail.offtrail.txt.path,
+        )
         out = (
-            directory is not None
-            and path.is_relative_to(directory)
+            path.is_relative_to(directory)
+            or path in files
         )
         return out
 
     def is_trackable(self, path: Path) -> bool:
         """
-        Whether a scan should track a path. It must be a file or a dirasset that `.markers` takes.
-        It is False for these, even if `.markers` takes them:
+        Whether a scan should track a path. It must be a file or a dirasset that `.ontrail` takes.
+        It is False for these, even if `.ontrail` takes them:
 
         - A path Trail already tracks.
         - A path in `untracked`.
         - Trail metadata.
+        - A path `.offtrail` ignores.
         - A path that is part of a dirasset.
 
-        `Dirs.tracks` says whether `.markers` alone takes a path.
+        `Dirs.tracks` says whether `.ontrail` alone takes a path.
         """
         trail = self._trail
         assets = trail.assets
-        # the stat comes last, since most candidates fail before it
         if (
             path in assets.path2entry
             or path in self.untracked
@@ -141,19 +151,20 @@ class Entries(Node):
             or assets.is_child(path)
         ):
             return False
-        if path.is_file():
-            return True
-        out = (
+        directory = (
             DirAsset.is_match(path)
             and path.is_dir()
         )
+        if trail.offtrail.ignores(path, directory=directory):
+            return False
+        out = directory or path.is_file()
         return out
 
     def is_walkable(self, path: Path) -> bool:
         """
         Whether a walk enters a directory. Symlinks, Trail metadata, paths in `untracked` and
-        directory assets are never entered. A hidden directory is entered only if a Dir sits at or
-        below it.
+        directory assets are never entered. A directory `.offtrail` ignores, such as `.git`, is
+        entered only if a Dir sits at or below it.
 
         >>> project: Path
         >>> self.is_walkable(project / '.git')
@@ -174,9 +185,9 @@ class Entries(Node):
             and asset.is_directory
         ):
             return False
-        # a hidden directory is walked only if a Dir sits at or below it, which keeps .git and
-        # .venv out of the walk
-        if not path.name.startswith('.'):
+        # a Dir below an ignored directory is reached through it, since a walk skips a root that
+        # a recursive root above it covers
+        if not trail.offtrail.ignores(path, directory=True):
             return True
         out = any(
             directory.path.is_relative_to(path)

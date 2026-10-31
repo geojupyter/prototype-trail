@@ -16,14 +16,14 @@ from trail.event import AddDirEvent, Event, RemoveDirEvent, WatchdogEvent
 
 
 class TestDirs:
-    """A Dir's identity and history in the log. `.markers` decides which Dirs are live."""
+    """A Dir's identity and history in the log. `.ontrail` decides which Dirs are live."""
 
     @staticmethod
     @contextmanager
     def workspace() -> Iterator[Path]:
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
-            (root / '.markers').write_text('./\n*.csv\ndata/\n', encoding='utf-8')
+            (root / '.ontrail').write_text('./\n*.csv\ndata/\n', encoding='utf-8')
             (root / 'data').mkdir()
             (root / 'data' / 'a.csv').write_text('a\n', encoding='utf-8')
             (root / 'raw').mkdir()
@@ -47,26 +47,26 @@ class TestDirs:
             ids = trail.dirs.ids.copy()
             reloaded = Trail(root)
             assert reloaded.dirs.ids == ids
-            # nothing changed in .markers, so the reload logs nothing
+            # nothing changed in .ontrail, so the reload logs nothing
             assert len(reloaded.events) == len(trail.events)
             assert isinstance(reloaded.dirs[root / 'data'], Dir)
 
-    def test_marking_and_unmarking_a_directory_logs_its_dir(self) -> None:
+    def test_adding_and_removing_a_directory_logs_its_dir(self) -> None:
         with self.workspace() as root:
             trail = Trail(root)
-            assert trail.mark('raw') == ['raw/']
+            assert trail.ontrail.add('raw') == ['raw/']
             addition = trail.events.select[-1]
             assert isinstance(addition, AddDirEvent)
             assert addition.entry is trail.dirs[root / 'raw']
             assert addition.rule == 'raw/'
             first = addition.entry.id
-            trail.unmark('raw/')
+            trail.ontrail.remove('raw/')
             removal = trail.events.select[-1]
             assert isinstance(removal, RemoveDirEvent)
             assert removal.entry is addition.entry
             assert root / 'raw' not in trail.dirs
-            # marked again, it is a new Dir, as an offtrailed file tracked again is a new asset
-            trail.mark('raw/')
+            # added again, it is a new Dir, as an untracked file tracked again is a new asset
+            trail.ontrail.add('raw/')
             assert trail.dirs[root / 'raw'].id != first
             assert Trail(root).dirs[root / 'raw'].id == trail.dirs[root / 'raw'].id
 
@@ -75,7 +75,7 @@ class TestDirs:
             trail = Trail(root)
             data = trail.dirs[root / 'data']
             count = len(trail.events)
-            trail.mark('data/*.png')
+            trail.ontrail.add('data/*.png')
             assert trail.dirs[root / 'data'] is data
             assert data.scopes.relative == ('./*.png',)
             assert not self.kinds(trail.events.select[count:])
@@ -83,7 +83,7 @@ class TestDirs:
     def test_a_dir_named_only_by_scopes_records_its_first_line(self) -> None:
         with self.workspace() as root:
             trail = Trail(root)
-            trail.mark('raw/*.tif')
+            trail.ontrail.add('raw/*.tif')
             addition = trail.events.select[-1]
             assert isinstance(addition, AddDirEvent)
             assert addition.rule == 'raw/*.tif'
@@ -94,7 +94,7 @@ class TestDirs:
             trail = Trail(root)
             data = trail.dirs[root / 'data'].id
             count = len(trail.events)
-            (root / '.markers').write_text('./\n*.csv\nraw/\n', encoding='utf-8')
+            (root / '.ontrail').write_text('./\n*.csv\nraw/\n', encoding='utf-8')
             edited = Trail(root)
             # a rename by hand is not guessed at: one Dir goes and another comes
             assert self.kinds(edited.events.select[count:]) == [
@@ -119,16 +119,16 @@ class TestDirs:
         with self.workspace() as root:
             trail = Trail(root)
             data = trail.dirs[root / 'data']
-            with pytest.warns(UserWarning, match='tracking data whole offtrails 1 asset inside it'):
-                table = trail.track(root / 'data')
+            with pytest.warns(UserWarning, match='tracking data whole untracks 1 asset inside it'):
+                table = trail.ontrail(root / 'data')
             assert table.is_directory
             assert root / 'data' / 'a.csv' not in trail.assets
             assert root / 'data' not in trail.dirs
             removal = trail.events.select[-1]
             assert isinstance(removal, RemoveDirEvent)
             assert removal.entry is data
-            assert "'data/' names a directory asset" in trail.markers.warnings[0]
-            # offtrailed, the line in .markers makes it a Dir again, under a new ID
+            assert "'data/' names a directory asset" in trail.ontrail.warnings[0]
+            # untracked, the line in .ontrail makes it a Dir again, under a new ID
             trail.offtrail(root / 'data')
             assert trail.dirs[root / 'data'].id != data.id
 
@@ -148,13 +148,13 @@ class TestDirs:
                         while renamed / 'a.csv' not in trail.assets:
                             await asyncio.sleep(0.01)
                     await trail.watchdog.session.stop()
-                # the Dir's line in .markers no longer names an existing directory, said once
+                # the Dir's line in .ontrail no longer names an existing directory, said once
                 moves = [
                     str(warning.message)
                     for warning in caught
-                    if 'is named by .markers but was moved' in str(warning.message)
+                    if 'is named by .ontrail but was moved' in str(warning.message)
                 ]
-                assert moves == [f'{root / "data"} is named by .markers but was moved to {renamed}']
+                assert moves == [f'{root / "data"} is named by .ontrail but was moved to {renamed}']
 
                 [moved] = [
                     event
@@ -164,7 +164,7 @@ class TestDirs:
                 assert isinstance(moved, WatchdogEvent)
                 assert moved.event_type == 'moved'
                 assert moved.dest_path == str(renamed)
-                # the line in .markers still names data/, so the Dir keeps its path
+                # the line in .ontrail still names data/, so the Dir keeps its path
                 assert data.path == root / 'data'
                 assert trail.dirs[root / 'data'] is data
                 assert trail.assets[renamed / 'a.csv'] is asset
