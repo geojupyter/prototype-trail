@@ -409,12 +409,13 @@ class Scopes(Sequence[str]):
         >>> self.relative
         ('./*.png',)
         """
-        out = []
-        for pattern in self.patterns:
-            if pattern.startswith('!'):
-                out.append(f'!.{pattern[1:]}')
-            else:
-                out.append(f'.{pattern}')
+        out = [
+            f'!.{pattern[1:]}'
+            if pattern.startswith('!')
+            else f'.{pattern}'
+            for pattern in self.patterns
+        ]
+
         return tuple(out)
 
     @cached_property

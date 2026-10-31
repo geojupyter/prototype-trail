@@ -15,7 +15,7 @@ from trail import fmt
 from trail.asset import Asset, DirAsset
 from trail.collection import Collection
 from trail.node import Node
-from trail.util import OPS, normalize_id
+from trail.util import normalize_id
 
 if TYPE_CHECKING:
     from trail.dir import Dir
@@ -24,6 +24,8 @@ if TYPE_CHECKING:
 
 
 EVENT_TYPES: Final = frozenset({"created", "modified", "deleted", "moved", "opened"})
+# the event types an access counts, in the order a repr lists them
+OPS: Final = ("opened", "created", "modified", "moved", "deleted")
 
 
 class Get:

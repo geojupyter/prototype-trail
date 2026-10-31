@@ -33,9 +33,8 @@ from watchdog.events import (
 from watchdog.observers import Observer
 
 from trail.asset import DirAsset
-from trail.event import DirectoryAccessEvent, WatchdogEvent
+from trail.event import OPS, DirectoryAccessEvent, WatchdogEvent
 from trail.node import Node
-from trail.util import OPS
 
 if TYPE_CHECKING:
     from types import TracebackType

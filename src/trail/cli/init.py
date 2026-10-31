@@ -31,8 +31,8 @@ from prompt_toolkit.layout.processors import BeforeInput
 
 from trail import fmt
 from trail.cli.console import Console
+from trail.cli.marker_completion import Paths
 from trail.cli.render import Renderer
-from trail.cli.scopes import Paths
 from trail.cli.theme import STYLE
 from trail.markers import (
     MARKERS,

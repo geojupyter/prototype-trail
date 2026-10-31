@@ -9,9 +9,8 @@ from tempfile import TemporaryDirectory
 import pytest
 
 from trail import Trail
-from trail.asset import Asset, DirAsset
+from trail.asset import EVERYTHING, Asset, DirAsset
 from trail.event import AddAssetEvent, RemoveAssetEvent
-from trail.util import EVERYTHING
 
 # the temporary name zarr writes a key to before renaming it into place
 PARTIAL = '.0123456789abcdef0123456789abcdef.partial'

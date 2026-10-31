@@ -10,7 +10,7 @@ from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
 from trail import Trail
-from trail.cli.scopes import ScopePaths
+from trail.cli.marker_completion import MarkerPaths
 from trail.dir import build, match
 from trail.markers import canonical
 
@@ -231,7 +231,7 @@ class TestCompletion:
             project = Path(temporary).resolve()
             (project / 'cube.zarr').mkdir()
             (project / 'data').mkdir()
-            completer = ScopePaths(lambda: project, lambda: project)
+            completer = MarkerPaths(lambda: project, lambda: project)
             completions = {
                 completion.display_text: completion.text
                 for text in ('./cu', './da')

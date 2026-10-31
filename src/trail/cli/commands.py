@@ -9,8 +9,8 @@ from prompt_toolkit.completion import CompleteEvent, Completer, Completion, Path
 from prompt_toolkit.document import Document
 
 from trail.cli.command import FORCE, Command, Listing
+from trail.cli.marker_completion import completer
 from trail.cli.node import Node
-from trail.cli.scopes import completer
 from trail.markers import kind, parse
 
 if TYPE_CHECKING:

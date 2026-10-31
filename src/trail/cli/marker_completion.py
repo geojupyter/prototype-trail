@@ -47,7 +47,7 @@ class Paths(PathCompleter):
                 )
 
 
-class Scope(Completer):
+class MarkerCompleter(Completer):
     """
     Base of the completers for a line of `.markers`. The word before the cursor is the line
     being completed, and each candidate shows the kind of line it would make.
@@ -80,7 +80,7 @@ class Scope(Completer):
         return document.get_word_before_cursor(WORD=True)
 
 
-class ScopePaths(Scope):
+class MarkerPaths(MarkerCompleter):
     """
     Completes the path in a line, which is the part before the first wildcard. A leading '!'
     is set aside while completing and kept in the line.
@@ -128,7 +128,7 @@ class ScopePaths(Scope):
             )
 
 
-class Extensions(Scope):
+class Extensions(MarkerCompleter):
     """
     Completes a word that is not a path to `*.ext`, for each extension that a bundled markers file
     names and that starts like it. See `extensions`. A leading '!' is kept.
@@ -170,7 +170,7 @@ class Extensions(Scope):
                 )
 
 
-class Rows(Scope):
+class Rows(MarkerCompleter):
     """
     Completes to the lines already listed, so taking one back takes a few keys.
 
@@ -183,8 +183,8 @@ class Rows(Scope):
         project: Callable[[], Path],
         cwd: Callable[[], Path],
     ) -> None:
-        """`rows` returns the lines listed now. The other arguments are as for `Scope`."""
-        Scope.__init__(self, project, cwd)
+        """`rows` returns the lines listed now. See `MarkerCompleter` for other arguments."""
+        MarkerCompleter.__init__(self, project, cwd)
         self.rows = rows
 
     def get_completions(
@@ -220,7 +220,7 @@ def completer(
         mark ./da<TAB>    data/    root
     """
     completers = [
-        ScopePaths(project, cwd),
+        MarkerPaths(project, cwd),
         Extensions(project, cwd),
         Rows(rows, project, cwd),
     ]

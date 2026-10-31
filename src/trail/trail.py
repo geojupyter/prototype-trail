@@ -391,7 +391,10 @@ class Trail(Node):
 
     def _is_ignored(self, path: Path) -> bool:
         """Returns True if the path is relative to the `trail` directory, e.g. `/.trail/ignored"""
-        return self.dir is not None and path.is_relative_to(self.dir)
+        return (
+            self.dir is not None
+            and path.is_relative_to(self.dir)
+        )
 
     def offtrail(self, *paths: PathLike) -> Asset | list[Asset]:
         """Offtrails the specified filesystem paths from the Trail."""

@@ -28,10 +28,9 @@ from watchdog.events import (
 from trail import Trail, fmt
 from trail.asset import DirAsset
 from trail.cli.console import Console
-from trail.event import DirectoryAccessEvent, Event, RemoveAssetEvent, WatchdogEvent
+from trail.event import OPS, DirectoryAccessEvent, Event, RemoveAssetEvent, WatchdogEvent
 from trail.playground import GDB, Playground, Store, ZarrV3
 from trail.session import Session
-from trail.util import OPS
 
 # no watchdog backend other than inotify reports a file being opened
 needs_opens = pytest.mark.skipif(sys.platform != 'linux', reason='only inotify reports opens')

@@ -6,15 +6,30 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from stat import S_ISDIR, S_ISREG
-from typing import TYPE_CHECKING, ClassVar, Self
+from typing import TYPE_CHECKING, ClassVar, Final, Self
 
 from trail import fmt
 from trail.entry import Entries, Entry
-from trail.util import CHILDREN, EVERYTHING, PathLike
+from trail.util import PathLike
 
 if TYPE_CHECKING:
     from trail.session import Access
     from trail.trail import Trail
+
+# the names of the files that are part of a dirasset, by the dirasset's suffix. A name is matched
+# whole, ignoring case. Anything else inside, such as a temporary or lock file, is not part of it
+CHILDREN: Final[dict[str, str]] = {
+    '.zarr': r'\d+(?:\.\d+)*|zarr\.json|\.z(?:array|attrs|group|metadata)',
+    '.n5': r'\d+|attributes\.json',
+    '.gdb': (
+        r'a[0-9a-f]{8}(?:\.(?!_compress\.)[^.]+)?'
+        r'\.(?:gdbtable|gdbtablx|gdbindexes|spx|atx|freelist|horizon)'
+        r'|gdb|timestamps'
+    ),
+    '.safe': r'.+(?<!\.aux)\.(?:jp2|xml|safe|tiff?|gml|html?|xsd|png|jpe?g|kml|json)',
+}
+# a directory tracked with `track DIR` holds everything in it
+EVERYTHING: Final = r'.*'
 
 
 @dataclass(kw_only=True, eq=False, repr=False)
@@ -388,11 +403,12 @@ class Assets(Entries[Asset]):
         else:
             for directory in dirs:
                 walks[directory.path] = directory.is_recursive
-        candidates.extend(walk(walks, self._descends))
+        walked = walk(walks, self._is_descending)
+        candidates.extend(walked)
         marked = {
             path: dirs.match(path)
             for path in dict.fromkeys(candidates)
-            if self._is_markable(path)
+            if self._is_trackable(path)
         }
         if not marked:
             return ()
@@ -453,7 +469,7 @@ class Assets(Entries[Asset]):
         out = self.holder(path) is not None
         return out
 
-    def _is_markable(self, path: Path) -> bool:
+    def _is_trackable(self, path: Path) -> bool:
         """
         Whether a scan should track a path. The path must not be tracked or offtrailed, and must not
         be Trail metadata or part of a dirasset. `.markers` must decide it. It must be a file or a
@@ -473,15 +489,14 @@ class Assets(Entries[Asset]):
             return True
         return DirAsset.is_match(path) and path.is_dir()
 
-
-    def _descends(self, path: Path) -> bool:
+    def _is_descending(self, path: Path) -> bool:
         """
         Whether a walk enters a directory. Symlinks, Trail metadata, offtrailed paths and
         directory assets are never entered. A hidden directory is entered only if a Dir sits at
         or below it.
 
         >>> project: Path
-        >>> self._descends(project / '.git')
+        >>> self._is_descending(project / '.git')
         False
         """
         trail = self._trail

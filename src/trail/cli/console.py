@@ -125,9 +125,12 @@ class Console(Node):
         """
         Returns a CommandCompleter that handles <TAB> completion in the command bar. The first word
         is completed against the command names. The rest of the line goes to that command's
-        `complete`. For example, `track` completes filesystem paths, `offtrail` completes tracked
-        paths, `mark` completes paths and extensions, and listings complete field names.
-        # no: should be bullet points for tarck, offtrail, mark, listings
+        `complete`:
+
+        - `track` completes filesystem paths.
+        - `offtrail` completes tracked paths.
+        - `mark` and `unmark` complete paths and extensions.
+        - Listings complete field names.
 
         CommandCompleter is a prompt_toolkit Completer, not a Node, so it holds the console
         directly.
