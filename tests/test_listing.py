@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import io
+import os
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager, redirect_stdout
+from contextlib import ExitStack, contextmanager, redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -12,6 +13,7 @@ from prompt_toolkit.document import Document
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
+from trail.cli import main
 from trail.cli.console import Console
 from trail.trail import Trail
 
@@ -111,7 +113,9 @@ class TestListing:
             assert self.positions(self.run(console, "assets path=folder")) == [3]
             assert "dirs: nothing matched" in self.run(console, "dirs")
             (root / "data").mkdir()
-            self.run(console, "ontrail add ./ data/*.csv folder/*.csv")
+            (root / ".ontrail").write_text("./\ndata/*.csv\nfolder/*.csv\n", encoding="utf-8")
+            console._trail.ontrail.txt.read()
+            console._trail.dirs.refresh()
             written = self.run(console, "dirs")
             # a directory asset is never a Dir, so folder is left out
             assert "dirs (2 of 2)" in written
@@ -119,7 +123,7 @@ class TestListing:
             assert self.positions(self.run(console, "dirs path=data")) == [1]
             assert self.positions(self.run(console, "dirs root=true")) == [0]
             # a Dir comes from .ontrail, so clearing the Dirs is refused
-            assert "'ontrail remove' its rules" in self.run(console, "dirs clear -f")
+            assert "edit .ontrail to remove its rule" in self.run(console, "dirs clear -f")
             assert len(console._trail.dirs) == 2
             data = console._trail.dirs[root / "data"]
             written = self.run(console, f"events entry={data.id}")
@@ -290,33 +294,19 @@ class TestOnTrailCommand:
     session = TestListing.session
     run = staticmethod(TestListing.run)
 
-    def test_add_tracks_now_and_writes_the_rule(self) -> None:
+    def test_ontrail_tracks_now_without_editing_rule_file(self) -> None:
         with self.session() as console:
             root = console.root
             (root / "d.csv").write_text("d\n", encoding="utf-8")
-            written = self.run(console, "ontrail add ./ csv")
-            assert "added to .ontrail: ./ (root); tracked 0 now" in written
-            assert "added to .ontrail: *.csv (root scope); tracked 1 now" in written
+            self.run(console, "ontrail d.csv")
             assert root / "d.csv" in console._trail.assets
-            assert (root / ".ontrail").read_text(encoding="utf-8") == "./\n*.csv\n"
-            assert "already in .ontrail: .csv" in self.run(console, "ontrail add .csv")
-            # the feed shows the pickup, with the line that made it
-            assert "rule: *.csv" in written
-
-    def test_remove_leaves_what_it_tracked(self) -> None:
-        with self.session() as console:
-            trail = console._trail
-            self.run(console, "ontrail add ./ csv")
-            written = self.run(console, "ontrail remove '**/*.csv'")
-            assert "removed from .ontrail: *.csv" in written
-            assert "removing '*.csv' leaves 3 assets tracked; offtrail removes them" in written
-            assert console.root / "a.csv" in trail.assets
-            assert list(trail.ontrail) == ["./"]
-            assert "not in .ontrail: tif" in self.run(console, "ontrail remove tif")
+            assert not (root / ".ontrail").exists()
+            assert "already tracked: d.csv" in self.run(console, "ontrail d.csv")
 
     def test_ontrail_lists_each_rule_with_its_kind_and_dir(self) -> None:
         with self.session() as console:
-            self.run(console, "ontrail add ./ csv folder/*.png")
+            (console.root / ".ontrail").write_text("./\n*.csv\nfolder/*.png\n", encoding="utf-8")
+            console._trail.ontrail.txt.read()
             written = self.run(console, "ontrail")
             rows = [
                 line.split()
@@ -348,8 +338,8 @@ class TestOnTrailCommand:
         with self.session() as console:
             written = self.run(console, "help")
             assert "'ontrail data/*.csv' tracks the csv files in data now" in written
-            assert "ontrail [PATH...|add RULE...|remove RULE...]" in written
-            assert "offtrail [PATH...|add RULE...|remove RULE...]" in written
+            assert "ontrail [PATH...]" in written
+            assert "offtrail [PATH...]" in written
             assert "entries" not in written
 
     def test_paths_change_assets_without_editing_rule_files(self) -> None:
@@ -397,52 +387,96 @@ class TestOnTrailCommand:
                     CompleteEvent(completion_requested=True),
                 )
             }
-            assert tracked == {'add', 'a.csv'}
+            assert tracked == {'a.csv'}
             absent = list(console.completer.get_completions(
                 Document('offtrail la'),
                 CompleteEvent(completion_requested=True),
             ))
             assert not absent
 
-    def test_ontrail_add_completes_extensions_and_paths(self) -> None:
+    def test_ontrail_completes_paths(self) -> None:
         with self.session() as console:
-            completions = {
-                completion.text: completion.display_meta_text
-                for completion in console.completer.get_completions(
-                    Document("ontrail add cs"),
-                    CompleteEvent(completion_requested=True),
-                )
-            }
-            assert completions == {"*.csv": "root scope"}
-            completions = {
-                completion.text: completion.display_meta_text
-                for completion in console.completer.get_completions(
-                    Document("ontrail add ./fol"),
-                    CompleteEvent(completion_requested=True),
-                )
-            }
-            assert completions == {"der/": "root"}
             offered = {
                 completion.text
                 for completion in console.completer.get_completions(
-                    Document("ontrail add ./"),
+                    Document("ontrail ./"),
                     CompleteEvent(completion_requested=True),
                 )
             }
             # the trail directory can never be added, so it is not offered
-            assert "folder/" in offered
+            assert "folder" in offered
             assert ".trail/" not in offered
 
     def test_offtrail_lists_adds_and_removes_its_rules(self) -> None:
         with self.session() as console:
             assert "  .*  root scope  every root" in self.run(console, "offtrail")
-            written = self.run(console, "offtrail add tmp")
-            assert "added to .offtrail: *.tmp (root scope)" in written
-            assert "already in .offtrail: .tmp" in self.run(console, "offtrail add .tmp")
-            assert "removed from .offtrail: *.tmp" in self.run(console, "offtrail remove tmp")
-            assert "not in .offtrail: tif" in self.run(console, "offtrail remove tif")
+            (console.root / "file.tmp").write_text("tmp\n", encoding="utf-8")
+            self.run(console, "ontrail file.tmp")
+            assert console.root / "file.tmp" in console._trail.assets
+            self.run(console, "offtrail file.tmp")
+            assert console.root / "file.tmp" not in console._trail.assets
             assert list(console._trail.offtrail) == [".*"]
-            assert "usage: offtrail [PATH...|add RULE...|remove RULE...]" in self.run(console, "offtrail add")
+            assert (console.root / ".offtrail").read_text(encoding="utf-8") == ".*\n"
+
+
+class TestCliSubcommands:
+    def test_ontrail_and_offtrail_subcommands(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / "project").mkdir()
+            project = root / "project"
+            Trail(project, ontrail="default")
+            (project / "file.csv").write_text("data\n", encoding="utf-8")
+
+            # test outside project directory
+            previous_dir = os.getcwd()
+            try:
+                os.chdir(root)
+                stderr_buffer = io.StringIO()
+                with redirect_stderr(stderr_buffer):
+                    code = main(["ontrail"])
+                assert code == 2
+                assert "not in a Trail project" in stderr_buffer.getvalue()
+
+                # test inside project directory
+                os.chdir(project)
+                stdout_buffer = io.StringIO()
+                with redirect_stdout(stdout_buffer):
+                    code = main(["ontrail"])
+                assert code == 0
+                assert "./" in stdout_buffer.getvalue()
+
+                # track file via shell subcommand
+                stdout_buffer = io.StringIO()
+                with redirect_stdout(stdout_buffer):
+                    code = main(["ontrail", "file.csv"])
+                assert code == 0
+                assert "tracked: file.csv" in stdout_buffer.getvalue()
+                assert project / "file.csv" in Trail(project).assets
+
+                # already tracked
+                stdout_buffer = io.StringIO()
+                with redirect_stdout(stdout_buffer):
+                    code = main(["ontrail", "file.csv"])
+                assert code == 0
+                assert "already tracked: file.csv" in stdout_buffer.getvalue()
+
+                # untrack file via shell subcommand
+                stdout_buffer = io.StringIO()
+                with redirect_stdout(stdout_buffer):
+                    code = main(["offtrail", "file.csv"])
+                assert code == 0
+                assert "untracked: file.csv" in stdout_buffer.getvalue()
+                assert project / "file.csv" not in Trail(project).assets
+
+                # show offtrail rules
+                stdout_buffer = io.StringIO()
+                with redirect_stdout(stdout_buffer):
+                    code = main(["offtrail"])
+                assert code == 0
+                assert ".*" in stdout_buffer.getvalue()
+            finally:
+                os.chdir(previous_dir)
 
 
 if __name__ == "__main__":

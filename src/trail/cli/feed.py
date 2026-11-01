@@ -55,7 +55,10 @@ class Feed(Node):
             if local.date() != self.day:
                 self.day = local.date()
                 rows.append(self._renderer.day_row(local, self.day_format))
-            rows.extend(self._renderer.render(event, position))
+            try:
+                rows.extend(self._renderer.render(event, position))
+            except Exception:  # noqa: BLE001
+                rows.append([('class:error', f'Could not render event {event.id}')])
         self.extend(rows)
 
     def extend(self, rows: Iterable[StyleAndTextTuples]) -> None:

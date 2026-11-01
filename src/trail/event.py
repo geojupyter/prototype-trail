@@ -105,10 +105,30 @@ class Event:
     def __init_subclass__(cls, **kwargs) -> None:
         # slots=True replaces the class captured by zero-argument super()
         super(Event, cls).__init_subclass__(**kwargs)
+        known = cls.classes.get(cls.__name__)
+        if known is not None and not (
+            known.__module__ == cls.__module__
+            and (
+                known.__qualname__ == cls.__qualname__
+                or (
+                    '__slots__' in cls.__dict__
+                    and '__dataclass_fields__' in cls.__dict__
+                    and cls.__dict__['__dataclass_fields__']
+                    is known.__dict__.get('__dataclass_fields__')
+                )
+            )
+        ):
+            raise TypeError(f"{cls.__name__} is already an event class in {known.__module__}")
         cls.classes[cls.__name__] = cls
 
     @classmethod
-    def from_record(cls, /, trail: Trail, resolved_entry: Entry | None = None, **record) -> Event:
+    def from_record(
+            cls,
+            /,
+            trail: Trail,
+            resolved_entry: Entry | None = None,
+            **record,
+    ) -> Event:
         """
         Rebuild an event from one record of the log. The entry it names is `resolved_entry` if
         given, otherwise the asset or the Dir with the record's entry id.
@@ -120,7 +140,7 @@ class Event:
             event_cls = cls
         if event_cls is None:
             raise ValueError(f"Unknown event class: {name!r}")
-        entry_id = normalize_id(record.pop("entry"))
+        identifier = record.pop("entry")
         record["timestamp"] = datetime.fromisoformat(record["timestamp"])
         deferred = {
             field.name: record.pop(field.name)
@@ -131,6 +151,9 @@ class Event:
         for name, value in deferred.items():
             setattr(event, name, value)
 
+        if identifier is None:
+            return event
+        entry_id = normalize_id(identifier)
         if resolved_entry is None:
             resolved_entry = trail.entries[entry_id]
         elif resolved_entry.id != entry_id:
@@ -154,7 +177,10 @@ class Event:
                 value = value.isoformat()
             out[name] = value
         out["cls"] = type(self).__name__
-        out["entry"] = self.entry.id
+        if self.entry is None:
+            out["entry"] = None
+        else:
+            out["entry"] = self.entry.id
         return out
 
 
@@ -499,18 +525,6 @@ class DirectoryAccessEvent(WatchdogEvent):
         return self.entry
 
 
-@dataclass(kw_only=True, slots=True, repr=False)
-class JupyterEvent(Event):
-    def apply(
-        self,
-        trail: Trail,
-        *,
-        replay: bool = False,
-    ) -> Entry | None:
-        """Returns the entry the event names. A Jupyter event changes nothing on its own."""
-        return self.entry
-
-
 class JSONL(Node):
     _parent: Events
 
@@ -545,13 +559,17 @@ class JSONL(Node):
                 if not line.strip():
                     continue
                 record = json.loads(line)
-                entry_id = normalize_id(record["entry"])
-                entry = seen.get(entry_id)
-                if entry is None:
-                    entry = trail.entries.get(entry_id)
+                identifier = record["entry"]
+                entry = None
+                if identifier is not None:
+                    entry_id = normalize_id(identifier)
+                    entry = seen.get(entry_id)
                     if entry is None:
-                        entry = self.record2entry(record, entry_id)
-                    seen[entry_id] = entry
+                        entry = trail.entries.get(entry_id)
+                        if entry is None:
+                            entry = self.record2entry(record, entry_id)
+                            entry._register()
+                        seen[entry_id] = entry
                 event = Event.from_record(trail=trail, resolved_entry=entry, **record)
                 if event.id in loaded:
                     raise ValueError(f"Duplicate event ID in {path}: {event.id}")

@@ -206,12 +206,13 @@ class Query[T: Selectable[Any], V](Select[T, V]):
         return type(self)(collection, self.root)
 
     def comparison(self, item: str) -> T:
-        """Returns the records one term selects. Path values are resolved against the root."""
+        """Select one term. Paths outside `data` are resolved against the project root."""
         match = self.parse(item)
         field = match["field"]
         value = match["value"]
         if (
             not field.endswith("path")
+            or field.startswith("data.")
             or not value
         ):
             return super().comparison(item)

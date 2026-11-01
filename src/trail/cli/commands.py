@@ -5,12 +5,11 @@ from functools import cached_property
 from textwrap import dedent
 from typing import TYPE_CHECKING, Final
 
-from prompt_toolkit.completion import CompleteEvent, Completer, Completion, PathCompleter
+from prompt_toolkit.completion import CompleteEvent, Completion, PathCompleter
 from prompt_toolkit.document import Document
 
 from trail.cli.command import FORCE, Command, Listing
 from trail.cli.node import Node
-from trail.cli.rule_completion import completer
 from trail.rule import Rule
 
 if TYPE_CHECKING:
@@ -34,16 +33,14 @@ KEYS: Final[tuple[tuple[str, str], ...]] = (
 # printed by `help` after the key bindings, one row per line
 NOTES: Final = dedent(
     """\
-    'ontrail data/*.csv' tracks the csv files in data now, while 'ontrail add data/*.csv' adds
-    the rule to .ontrail, so the csv files written there later are tracked as well
-    tracking a directory tracks it whole, as one asset; 'ontrail add data/' watches it
-    instead, so the files in it that the extensions in .ontrail name are tracked one by one
-    a dirasset such as a .zarr store is added without its '/', so 'ontrail add data/cube.zarr'
+    'ontrail data/*.csv' tracks the csv files in data now, while editing .ontrail
+    to include 'data/*.csv' tracks them automatically when they appear
+    tracking a directory tracks it whole, as one asset
+    a dirasset such as a .zarr store is added without its '/', so 'ontrail data/cube.zarr'
     tracks it whole, and the reads and writes inside it are logged as one access
-    'ontrail remove' only edits .ontrail: what a rule already tracked stays tracked until
-    removed with 'offtrail PATH'
+    .ontrail and .offtrail are text files; edit them directly to change rules
     .offtrail excludes paths from automatic tracking before .ontrail; it starts with '.*', which
-    skips dotfiles and hidden folders, and 'offtrail add !.env' hands .env back to .ontrail
+    skips dotfiles and hidden folders
     the feed is ordinary output, so scrolling, selecting and copying are the
     terminal's own and work as they do anywhere else
     a listing reads what follows it as a selection: every term names its field, terms
@@ -66,54 +63,18 @@ class RulesCommand(Command):
     """
     Base of `ontrail` and `offtrail`. Alone, the command lists the rules of its file, each with its
     kind and the Dir it belongs to, then any warnings about them. Paths change tracked assets.
-    `add` and `remove` edit the rules.
     """
-
-    # the words that can follow the command name
-    actions = ("add", "remove")
 
     @property
     def rules(self) -> Rules:
-        """Returns the rules the command lists and edits."""
+        """Returns the rules the command lists."""
         raise NotImplementedError
-
-    @cached_property
-    def completer(self) -> Completer:
-        """Returns the completer for the rules of the file."""
-        out = completer(
-            lambda: self.rules,
-            lambda: self.rules.project,
-            lambda: self._console.root,
-        )
-        return out
 
     def complete(
         self,
         document: Document,
         complete_event: CompleteEvent,
     ) -> Iterator[Completion]:
-        """
-        Completes paths and the actions `add` and `remove`. After an action, completes rules,
-        extensions as `*.ext`, and paths.
-        """
-        word = self.word(document)
-        tokens = document.text_before_cursor.split()
-        editing = (
-            len(tokens) >= 2
-            and tokens[1] in self.actions
-            and (len(tokens) > 2 or not word)
-        )
-        if editing:
-            yield from self.completer.get_completions(document, complete_event)
-            return
-        first = (
-            len(tokens) <= 1
-            or (len(tokens) == 2 and bool(word))
-        )
-        if first:
-            for action in self.actions:
-                if action.startswith(word):
-                    yield Completion(action, start_position=-len(word))
         yield from self.complete_paths(document, complete_event)
 
     def complete_paths(
@@ -127,68 +88,17 @@ class RulesCommand(Command):
         raise NotImplementedError
 
     def __call__(self, arguments: Sequence[str]) -> None:
-        """List rules with no arguments. Paths change assets; `add` and `remove` edit rules."""
+        """List rules with no arguments. Paths or patterns change tracked assets."""
         if not arguments:
             self.show()
             return
-        action = arguments[0]
-        if action not in self.actions:
-            self.call(arguments)
-            return
-        texts = arguments[1:]
-        if not texts:
-            self._feed.error(f"usage: {self.usage}")
-            return
-        if action == "add":
-            self.add(texts)
-        else:
-            self.remove(texts)
-
-    def add(self, texts: Sequence[str]) -> None:
-        """Add a rule for each pattern, and print each rule added with its kind."""
-        rules = self.rules
-        name = rules.filename
-        for text in texts:
-            try:
-                added = rules.add(text, cwd=self._console.root)
-            except (OSError, ValueError) as error:
-                self._feed.error(f"{text}: {error}")
-                continue
-            if not added:
-                self._feed.info(f"already in {name}: {text}")
-                continue
-            rule = added[0]
-            described = Rule(rule).kind(rules.project)
-            self._feed.info(f"added to {name}: {rule} ({described})")
-
-    def remove(self, texts: Sequence[str]) -> None:
-        """
-        Remove the rules each pattern stands for, and print them. `Console.submit` prints the
-        warnings and the events the change led to.
-
-        > ontrail remove .tsv
-        removed from .ontrail: *.tsv
-        removing '*.tsv' leaves 1 asset tracked; offtrail removes it
-        """
-        rules = self.rules
-        name = rules.filename
-        for text in texts:
-            try:
-                removed = rules.remove(text, cwd=self._console.root)
-            except (OSError, ValueError) as error:
-                self._feed.error(f"{text}: {error}")
-                continue
-            if not removed:
-                self._feed.error(f"not in {name}: {text}")
-                continue
-            for rule in removed:
-                self._feed.info(f"removed from {name}: {rule}")
+        self.call(arguments)
 
     def show(self) -> None:
         """Print a row for each rule of the file, then the warnings about them."""
         rules = self.rules
         if not rules:
-            self._feed.info(f"{rules.filename}: none; '{self.name} add' adds a rule")
+            self._feed.info(f"{rules.filename}: none; edit {rules.filename} to add rules")
         project = rules.project
         rows = []
         for rule in rules:
@@ -229,14 +139,9 @@ class RulesCommand(Command):
 
 class OnTrailCommand(RulesCommand):
     """
-    List the rules of `.ontrail`, or add or remove them. `ontrail` alone lists each rule with its
-    kind and the Dir it belongs to, then any warnings about them. Paths are tracked immediately.
-
-    - `ontrail add` adds a rule for each pattern, then tracks the files it takes now. Files it takes
-      later are tracked when they appear. `csv` and `.csv` add `*.csv`. A directory adds its rule
-      with a trailing `/`.
-    - `ontrail remove` removes the rules each pattern stands for. Files they took stay tracked, and
-      the feed says how many. `offtrail PATH` removes them.
+    List the rules of `.ontrail`, or track paths now. `ontrail` alone lists each rule with its
+    kind and the Dir it belongs to, then any warnings about them. Paths and patterns are tracked
+    immediately without editing `.ontrail`.
 
     > ontrail
       ./          root                        ./
@@ -245,43 +150,13 @@ class OnTrailCommand(RulesCommand):
     """
 
     name = "ontrail"
-    usage = "ontrail [PATH...|add RULE...|remove RULE...]"
-    summary = "track paths now; list or edit .ontrail rules"
+    usage = "ontrail [PATH...]"
+    summary = "track paths now; list .ontrail rules"
 
     @property
     def rules(self) -> OnTrail:
         """Returns the Trail's `.ontrail`."""
         return self._trail.ontrail
-
-    def add(self, texts: Sequence[str]) -> None:
-        """
-        Add a rule for each pattern. Prints each rule added with its kind, and how many files the
-        scan tracked.
-
-        > ontrail add csv data/*.png csv
-        added to .ontrail: *.csv (root scope); tracked 2 now
-        added to .ontrail: data/*.png (dir scope · not subfolders); tracked 1 now
-        already in .ontrail: csv
-        > ontrail add !
-        !: Not a rule: '!'
-        """
-        trail = self._trail
-        ontrail = trail.ontrail
-        project = ontrail.project
-        for text in texts:
-            before = len(trail.assets)
-            try:
-                added = ontrail.add(text, cwd=self._console.root)
-            except (OSError, ValueError) as error:
-                self._feed.error(f"{text}: {error}")
-                continue
-            if not added:
-                self._feed.info(f"already in .ontrail: {text}")
-                continue
-            rule = added[0]
-            tracked = len(trail.assets) - before
-            described = Rule(rule).kind(project)
-            self._feed.info(f"added to .ontrail: {rule} ({described}); tracked {tracked} now")
 
     def call(self, arguments: Sequence[str]) -> None:
         """Track each path, skipping the ones already tracked. Errors are printed to the feed."""
@@ -321,19 +196,13 @@ class OnTrailCommand(RulesCommand):
 
 class OffTrailCommand(RulesCommand):
     """
-    List the rules of `.offtrail`, or add or remove them. `.offtrail` excludes paths from automatic
-    tracking before `.ontrail`. Paths are removed from tracking. A new project's `.offtrail` holds
-    `.*`, which ignores every dotfile and hidden folder.
-
-    - `offtrail add` adds a rule for each pattern. Assets it ignores stay tracked, and the feed says
-      how many. `offtrail PATH` removes them.
-    - `offtrail remove` removes the rules each pattern stands for, then tracks what `.ontrail` takes
-      among the paths they ignored.
+    List the rules of `.offtrail`, or stop tracking paths. `.offtrail` excludes paths from automatic
+    tracking before `.ontrail`. Paths and patterns are removed from tracking without editing `.offtrail`.
     """
 
     name = "offtrail"
-    usage = "offtrail [PATH...|add RULE...|remove RULE...]"
-    summary = "stop tracking paths; list or edit .offtrail rules"
+    usage = "offtrail [PATH...]"
+    summary = "stop tracking paths; list .offtrail rules"
 
     @property
     def rules(self) -> OffTrail:
@@ -401,7 +270,7 @@ class DirsCommand(Listing):
 
     def discard(self, arguments: Sequence[str]) -> None:
         """Refuse to clear the Dirs, since they come from `.ontrail`."""
-        message = "dirs: a Dir comes from .ontrail, so 'ontrail remove' its rules to remove it"
+        message = "dirs: a Dir comes from .ontrail, so edit .ontrail to remove its rule"
         self._feed.error(message)
 
 

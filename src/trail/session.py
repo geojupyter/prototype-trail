@@ -492,7 +492,69 @@ class Handler(FileSystemEventHandler):
         return out
 
 
-class WatchdogSession(Node):
+class Session(Node):
+    is_started = False
+    pid: int
+
+    @classmethod
+    def descriptor(cls) -> Self:
+        """
+        Returns a session with no parent, for an owner to hold as `session`. It is never started.
+        Each owner's session is kept in its `__dict__` under the same name.
+
+        Reading `watchdog.session` returns the Watchdog's session, made on first read:
+        >>> WatchdogSession.__get__
+
+        Deleting it closes the session and drops it:
+        >>> WatchdogSession.__delete__
+        """
+        out = cls.__new__(cls)
+        return out
+
+    def __get__(
+            self,
+            instance: Node | None,
+            owner: type,
+    ) -> Self:
+        """
+        The owner's session, made on first read. A forked child inherits a started run but none
+        of its threads, so the run is forgotten there without being closed.
+        """
+        if instance is None:
+            return self
+        cache = instance.__dict__
+        session = cache.get(self.__name__)
+        if session is None:
+            session = type(self)(instance)
+            cache[self.__name__] = session
+        elif (
+            session.is_started
+            and session.pid != os.getpid()
+        ):
+            session.is_started = False
+        return session
+
+    def __delete__(self, instance: Node) -> None:
+        """
+        Close the session and drop it. The next read makes a new one, with the class's settings.
+        """
+        session = instance.__dict__.pop(self.__name__, None)
+        if session is not None:
+            session.close()
+
+    def __bool__(self) -> bool:
+        """Whether a run has started in this process and has not closed."""
+        out = (
+            self.is_started
+            and self.pid == os.getpid()
+        )
+        return out
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class WatchdogSession(Session):
     """
     The watching of one Watchdog. It is made on first read of `watchdog.session` and kept. Each
     run, from `start` to `stop`, gets a new observer, its watches, the queue the observer thread
@@ -540,60 +602,6 @@ class WatchdogSession(Node):
     pid: int
     # registered with atexit while the run is open
     hook: Callable[[], None] | None
-
-    @classmethod
-    def descriptor(cls) -> Self:
-        """
-        Returns a WatchdogSession with no parent, for Watchdog to hold as `session`. It is never
-        started. Each Watchdog's own session is kept in its `__dict__` under the same name.
-
-        Reading `watchdog.session` returns the Watchdog's session, made on first read:
-        >>> WatchdogSession.__get__
-
-        Deleting it closes the session and drops it:
-        >>> WatchdogSession.__delete__
-        """
-        out = cls.__new__(cls)
-        return out
-
-    def __get__(
-            self,
-            instance: Watchdog | None,
-            owner: type,
-    ) -> WatchdogSession:
-        """
-        The Watchdog's session, made on first read. A forked child inherits a started run but none
-        of its threads, so the run is forgotten there without being closed.
-        """
-        if instance is None:
-            return self
-        cache = instance.__dict__
-        session = cache.get(self.__name__)
-        if session is None:
-            session = type(self)(instance)
-            cache[self.__name__] = session
-        elif (
-            session.is_started
-            and session.pid != os.getpid()
-        ):
-            session.is_started = False
-        return session
-
-    def __delete__(self, instance: Watchdog) -> None:
-        """
-        Close the session and drop it. The next read makes a new one, with the class's settings.
-        """
-        session = instance.__dict__.pop(self.__name__, None)
-        if session is not None:
-            session.close()
-
-    def __bool__(self) -> bool:
-        """Whether a run has started in this process and has not closed."""
-        out = (
-            self.is_started
-            and self.pid == os.getpid()
-        )
-        return out
 
     @property
     def is_active(self) -> bool:
@@ -670,12 +678,15 @@ class WatchdogSession(Node):
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return False
-        self.prepare(loop)
+        if not self._trail.lock.acquire(self):
+            return False
         try:
+            self.prepare(loop)
             self.open()
             self.place_watches()
         except BaseException:
             self.close()
+            self._trail.lock.release(self)
             raise
         return True
 
@@ -809,8 +820,11 @@ class WatchdogSession(Node):
             # the loop the consumer runs on may have closed
             with suppress(RuntimeError):
                 consumer.cancel()
-        self.record_open()
-        self.is_started = False
+        try:
+            self.record_open()
+        finally:
+            self.is_started = False
+            self._trail.lock.release(self)
 
     async def run(self) -> None:
         """

@@ -1,3 +1,5 @@
+jsonschema>=4
 pathspec
 pytest
+pyyaml>=6
 watchdog

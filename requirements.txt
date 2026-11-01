@@ -1,2 +1,5 @@
+jupyter-core>=5
 pathspec
+psutil>=5.9
+tornado>=6.4
 watchdog

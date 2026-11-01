@@ -19,6 +19,7 @@ from trail.event import (
     RemoveDirEvent,
     WatchdogEvent,
 )
+from trail.jupyter.event import JupyterEvent
 
 if TYPE_CHECKING:
     from trail.cli.console import Console
@@ -214,6 +215,18 @@ class Renderer(Node):
             f"{accesses}"
             f"  {state}"
         )
+        jupyter = trail.__dict__.get('jupyter')
+        if jupyter is not None and jupyter.session.is_active:
+            servers = jupyter.session.servers
+            subscribed = sum(
+                server.state == 'subscribed'
+                for server in servers.values()
+            )
+            expected = sum(
+                server.state in ('connecting', 'subscribed', 'retrying', 'refused', 'error')
+                for server in servers.values()
+            )
+            counts += f'  jupyter {subscribed}/{expected}'
         row.append(("class:header.counts", counts))
         return row
 
@@ -263,6 +276,9 @@ class Renderer(Node):
             return "unwatched"
         if isinstance(event, WatchdogEvent):
             out = event.event_type or "event"
+            return out
+        if isinstance(event, JupyterEvent):
+            out = event.verb or 'event'
             return out
         out = (
             type(event).__name__

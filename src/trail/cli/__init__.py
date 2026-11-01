@@ -3,19 +3,161 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import sys
 from collections.abc import Sequence
+from glob import iglob
 from pathlib import Path
 from typing import NoReturn
 
+from pathspec import PathSpec
+
 from trail.cli.console import Console
 from trail.cli.init import init
+from trail.rule import Rule, Rules
 from trail.trail import Trail
 
 __all__ = ["Console", "main", "parse", "relaunch"]
 
-# the one subcommand; anything else in its place is the project directory
 INIT = "init"
+ONTRAIL = "ontrail"
+OFFTRAIL = "offtrail"
+MAGIC = re.compile(r"[*?\[]")
+
+
+def print_rules(
+        rules: Rules,
+        project: Path,
+) -> None:
+    rows = []
+    for rule in rules:
+        try:
+            base, _ = Rule(rule).parse(project)
+        except ValueError:
+            owner = ""
+        else:
+            if base is None:
+                owner = "every root"
+            elif base == project:
+                owner = "./"
+            else:
+                try:
+                    owner = str(base.relative_to(project)) + "/"
+                except ValueError:
+                    owner = str(base) + "/"
+        rows.append((rule, Rule(rule).kind(project), owner))
+    if not rows:
+        print(f"{rules.filename}: none; edit {rules.filename} to add rules")
+    else:
+        width = max(
+            (
+                len(rule)
+                for rule, _, _ in rows
+            ),
+            default=0,
+        )
+        kinds = max(
+            (
+                len(described)
+                for _, described, _ in rows
+            ),
+            default=0,
+        )
+        for rule, described, owner in rows:
+            print(f"  {rule:<{width}}  {described:<{kinds}}  {owner}")
+    for warning in rules.warnings:
+        print(f"warning: {warning}", file=sys.stderr)
+
+
+def run_subcommand(
+        command: str,
+        patterns: Sequence[str],
+) -> int:
+    located = Trail.locate(Path.cwd())
+    if located is None:
+        print("trail: not in a Trail project (or any parent directory)", file=sys.stderr)
+        return 2
+    root = located.parent
+    trail = Trail(root)
+    if not patterns:
+        if command == ONTRAIL:
+            print_rules(trail.ontrail, root)
+        else:
+            print_rules(trail.offtrail, root)
+        return 0
+
+    if command == ONTRAIL:
+        for pattern in patterns:
+            expanded = Path(pattern).expanduser()
+            if not MAGIC.search(pattern):
+                matches = [(root / expanded).resolve()]
+            else:
+                found = iglob(
+                    str(expanded),
+                    root_dir=root,
+                    recursive=True,
+                )
+                matches = sorted(
+                    (root / Path(match)).resolve()
+                    for match in found
+                )
+            if not matches:
+                print(f"no matches: {pattern}", file=sys.stderr)
+            for path in matches:
+                if path in trail.assets:
+                    if path.is_relative_to(root):
+                        rel_path = path.relative_to(root)
+                    else:
+                        rel_path = path
+                    print(f"already tracked: {rel_path}")
+                    continue
+                try:
+                    trail.ontrail(path)
+                    if path.is_relative_to(root):
+                        display = path.relative_to(root)
+                    else:
+                        display = path
+                    print(f"tracked: {display}")
+                except (OSError, ValueError) as error:
+                    if path.is_relative_to(root):
+                        display = path.relative_to(root)
+                    else:
+                        display = path
+                    print(f"error: {display}: {error}", file=sys.stderr)
+    else:
+        for pattern in patterns:
+            expanded = Path(pattern).expanduser()
+            if not MAGIC.search(pattern):
+                target = (root / expanded).resolve()
+                matches = [target]
+            else:
+                if not expanded.is_absolute():
+                    abs_pat = (root / expanded).resolve()
+                else:
+                    abs_pat = expanded
+                spec = PathSpec.from_lines("gitignore", [abs_pat.as_posix()])
+                matches = sorted(
+                    asset.path
+                    for asset in trail.assets
+                    if spec.match_file(asset.path.as_posix())
+                )
+            if not matches:
+                print(f"no matches: {pattern}", file=sys.stderr)
+            for path in matches:
+                if path not in trail.assets:
+                    if path.is_relative_to(root):
+                        display = path.relative_to(root)
+                    else:
+                        display = path
+                    print(f"not tracked: {display}", file=sys.stderr)
+                    continue
+                trail.offtrail(path)
+                if path.is_relative_to(root):
+                    display = path.relative_to(root)
+                else:
+                    display = path
+                print(f"untracked: {display}")
+    return 0
 
 
 def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -50,6 +192,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     argv = list(argv)
+    if bool(argv) and argv[0] in (ONTRAIL, OFFTRAIL):
+        return run_subcommand(argv[0], argv[1:])
     initializing = (
         bool(argv)
         and argv[0] == INIT

@@ -54,6 +54,13 @@ VERB_STYLES: Final[dict[str, str]] = {
     "deleted": "class:event.deleted",
     "moved": "class:event.moved",
     "opened": "class:event.opened",
+    "closed": "class:event.opened",
+    "added": "class:event.created",
+    "updated": "class:event.modified",
+    "removed": "class:event.deleted",
+    "saved": "class:event.modified",
+    "activated": "class:event.created",
+    "deactivated": "class:event.opened",
 }
 
 # the glyphs an emblem is drawn from. ⛰️ 🏔️ 🏕️ end in an invisible VS16. ZWJ sequences

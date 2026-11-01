@@ -263,7 +263,6 @@ class Console(Node):
         Run one line from the command bar. The line is echoed to the feed, then passed to the
         command that its first word names. Events the command recorded are printed right after.
         Errors and warnings from the command are printed to the feed, and errors do not propagate.
-        For example, `ontrail remove` warns about what stays tracked.
 
         > assets
         assets (2 of 2)
@@ -318,7 +317,9 @@ class Run(Node):
         # taken before the observer starts, so that nothing recorded between the banner and
         # the first wakeup slips through the gap
         watching = trail.events.watch()
-        async with trail.watchdog.session:
+        jupyter = trail.jupyter
+        jupyter.on_notice = self.warn
+        async with trail.watchdog.session, jupyter.session:
             streaming = asyncio.create_task(
                 self.stream(watching),
                 name="trail-console-stream",

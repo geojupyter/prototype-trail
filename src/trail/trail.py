@@ -13,6 +13,8 @@ from trail.asset import Asset, Assets
 from trail.dir import Dirs
 from trail.entries import Entries
 from trail.event import Events, WatchdogEvent
+from trail.jupyter import Jupyter
+from trail.lock import Lock
 from trail.node import Node
 from trail.offtrail import OffTrail
 from trail.ontrail import OnTrail, Scopes
@@ -90,6 +92,16 @@ class Trail(Node):
 
     # paths listed by __repr__ before the remainder is summarized
     repr_limit = 10
+
+    @cached_property
+    def jupyter(self) -> Jupyter:
+        out = Jupyter(self)
+        return out
+
+    @cached_property
+    def lock(self) -> Lock:
+        out = Lock(self)
+        return out
 
     @cached_property
     def watchdog(self):

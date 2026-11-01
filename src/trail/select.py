@@ -4,7 +4,7 @@ import builtins
 import re
 import shlex
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from copy import copy
 from datetime import UTC, datetime, time
 from functools import cached_property
@@ -17,7 +17,7 @@ from trail.node import Node
 # start:stop:step, each part optional, counted the way python counts
 SLICE: Final = re.compile(r'(-?\d+)?:(-?\d+)?(?::(-?\d+)?)?')
 COMPARISON: Final = re.compile(
-    r'(?P<field>[A-Za-z_]\w*)(?P<operator>==|!=|<=|>=|=|<|>)(?P<value>.*)',
+    r'(?P<field>[A-Za-z_]\w*(?:\.[\w-]+)*)(?P<operator>==|!=|<=|>=|=|<|>)(?P<value>.*)',
     re.DOTALL,
 )
 EQUALITY: Final = ('=', '==')
@@ -268,7 +268,13 @@ class Select[T: Selectable[Any], V](Node):
         # `cls` is the record's class, the name its stored record gives it
         if field == 'cls':
             return type(record)
-        out = getattr(record, field, None)
+        parts = field.split('.')
+        out = getattr(record, parts[0], None)
+        for key in parts[1:]:
+            if isinstance(out, Mapping):
+                out = out.get(key)
+            else:
+                out = getattr(out, key, None)
         # an empty string is how an event leaves a field unset, and its repr omits it likewise
         if (
                 out is None
