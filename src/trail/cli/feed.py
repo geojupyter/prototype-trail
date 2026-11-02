@@ -8,6 +8,7 @@ from typing import Final
 from prompt_toolkit.formatted_text import FormattedText, StyleAndTextTuples
 from prompt_toolkit.shortcuts import print_formatted_text
 
+from trail.cli.command import Query
 from trail.cli.node import Node
 from trail.cli.theme import PROMPT, STYLE
 from trail.event import Event
@@ -28,6 +29,7 @@ class Feed(Node):
     day: date | None = None
     # how that change is announced
     day_format = "%A %d %B %Y"
+    expression = ""
 
     @cached_property
     def rows(self) -> list[StyleAndTextTuples]:
@@ -49,8 +51,18 @@ class Feed(Node):
         0. AddAssetEvent
             id: 7960adcac6b04dbb98cf1ed8562f7d6f
         """
+        selected = None
+        if self.expression:
+            query = Query(self._trail.events, self._console.root)
+            try:
+                selected = query(self.expression)
+            except (TypeError, ValueError) as error:
+                self.error(f"feed: {error}")
+                return
         rows: list[StyleAndTextTuples] = []
         for position, event in enumerate(events, start):
+            if selected is not None and event.id not in selected:
+                continue
             local = event.timestamp.astimezone()
             if local.date() != self.day:
                 self.day = local.date()

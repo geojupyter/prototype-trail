@@ -8,8 +8,9 @@ from typing import TYPE_CHECKING, Final
 from prompt_toolkit.completion import CompleteEvent, Completion, PathCompleter
 from prompt_toolkit.document import Document
 
-from trail.cli.command import FORCE, Command, Listing
+from trail.cli.command import FORCE, Command, Listing, Query
 from trail.cli.node import Node
+from trail.collection import attributes
 from trail.rule import Rule
 
 if TYPE_CHECKING:
@@ -47,6 +48,9 @@ NOTES: Final = dedent(
     side by side all have to hold, 'or' takes either side, and a slice cuts what the terms
     before it left, so 'events (src_path=a.csv or src_path=b.csv) -5:' is the last five
     records of either file
+    'feed cls=ViewportV1Event or cls=LayerV1Event' filters new live output with the same
+    selection syntax; each 'feed' replaces the filter, and 'feed' alone shows all events
+    slices count the whole event log; changing the filter does not replay earlier events
     every listing takes 'clear': 'assets clear -f' untracks what it lists and
     records the removals, while 'events clear -f' discards the log those were kept in
     'clear -f' on its own does both, and ctrl-l empties the terminal instead
@@ -288,6 +292,38 @@ class EventsCommand(Listing):
     @property
     def collection(self) -> Events:
         return self._trail.events
+
+
+class FeedCommand(Command):
+    name = "feed"
+    usage = "feed [EXPRESSION]"
+    summary = "replace the live event filter; no expression shows all events"
+
+    def submit(self, text: str) -> None:
+        query = Query(self._trail.events, self._console.root)
+        try:
+            query(text)
+        except (TypeError, ValueError) as error:
+            self._feed.error(f"feed: {error}")
+            return
+        self._feed.expression = text
+        if text:
+            self._feed.info(f"feed: {text}")
+        else:
+            self._feed.info("feed: all events")
+
+    def complete(
+        self,
+        document: Document,
+        complete_event: CompleteEvent,
+    ) -> Iterator[Completion]:
+        word = self.word(document)
+        if "=" in word:
+            return
+        stem = word.lstrip("(")
+        for name in attributes(self._trail.events.types):
+            if name.startswith(stem):
+                yield Completion(f"{name}=", start_position=-len(stem))
 
 
 class ClearCommand(Command):
