@@ -8,8 +8,14 @@ from trail.node import Node
 
 
 class Lock(Node):
-    def __init__(self, parent: Node) -> None:
+    def __init__(
+        self,
+        parent: Node | None = None,
+        *,
+        path: Path | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._path = path
         self.pid = os.getpid()
         self.fd: int | None = None
         self.holders: set[object] = set()
@@ -17,6 +23,8 @@ class Lock(Node):
 
     @property
     def path(self) -> Path | None:
+        if self._path is not None:
+            return self._path
         directory = self._trail.dir
         if directory is None:
             return None

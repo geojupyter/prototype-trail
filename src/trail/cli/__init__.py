@@ -14,6 +14,7 @@ from pathspec import PathSpec
 
 from trail.cli.console import Console
 from trail.cli.init import init
+from trail.lock import Lock
 from trail.rule import Rule, Rules
 from trail.trail import Trail
 
@@ -22,6 +23,7 @@ __all__ = ["Console", "main", "parse", "relaunch"]
 INIT = "init"
 ONTRAIL = "ontrail"
 OFFTRAIL = "offtrail"
+TRIAGE = "triage"
 MAGIC = re.compile(r"[*?\[]")
 
 
@@ -165,7 +167,10 @@ def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="trail",
         description="Watch a project directory and record what happens to its resources.",
-        epilog="'trail init [PATH]' walks through (re)initializing a project.",
+        epilog=(
+            "'trail init [PATH]' walks through (re)initializing a project. "
+            "'trail triage [PATH]' reviews pending events."
+        ),
     )
     parser.add_argument(
         "path",
@@ -179,6 +184,36 @@ def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="keep the log in memory instead of serializing it to PATH/.trail",
     )
     return parser.parse_args(argv)
+
+
+def run_triage(
+    root: Path,
+    nodir: bool = False,
+) -> int:
+    lock = None
+    holder = object()
+    if not nodir:
+        directory = Trail.locate(root)
+        if directory is None:
+            print('trail: no Trail project; run trail init first', file=sys.stderr)
+            return 2
+        lock = Lock(path=directory / 'lock')
+        if not lock.acquire(holder):
+            return 2
+    try:
+        if nodir:
+            trail = Trail()
+        else:
+            trail = Trail(directory)
+            trail.lock = lock
+        console = Console(trail, root)
+        asyncio.run(console.run(triage=True))
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        if lock is not None:
+            lock.release(holder)
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -198,7 +233,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         bool(argv)
         and argv[0] == INIT
     )
-    if initializing:
+    triaging = bool(argv) and argv[0] == TRIAGE
+    if initializing or triaging:
         argv = argv[1:]
     arguments = parse(argv)
     if (
@@ -220,6 +256,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not sys.stdin.isatty():
         print("trail: the console needs an interactive terminal", file=sys.stderr)
         return 2
+    if triaging:
+        out = run_triage(root, arguments.nodir)
+        return out
     returning = False
     if arguments.nodir:
         trail = Trail()

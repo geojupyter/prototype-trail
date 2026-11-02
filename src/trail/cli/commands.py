@@ -316,6 +316,19 @@ class ClearCommand(Command):
         self._feed.info(f"clear: cleared assets {assets}, events {events}")
 
 
+class TriageCommand(Command):
+    name = 'triage'
+    usage = 'triage'
+    summary = 'review pending events; accept or delete them'
+
+    def __call__(self, arguments: Sequence[str]) -> None:
+        if arguments:
+            self._feed.error(f'usage: {self.usage}')
+            return
+        console = self._console
+        console.application.create_background_task(console.triage())
+
+
 class HelpCommand(Command):
     """Print the commands, the key bindings in `KEYS`, and the notes in `NOTES`."""
 

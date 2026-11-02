@@ -103,6 +103,7 @@ class TestDirectoryAccessEvent:
             assert len(lines) == 2
             assert record == {
                 'id': event.id,
+                'is_accepted': False,
                 'timestamp': event.timestamp.isoformat(),
                 'src_path': str(asset.path),
                 'dest_path': '',
@@ -113,6 +114,7 @@ class TestDirectoryAccessEvent:
                 'count': {'opened': 1, 'created': 0, 'modified': 72, 'moved': 0, 'deleted': 0},
                 'cls': 'DirectoryAccessEvent',
                 'entry': asset.id,
+                'entry_type': 'DirAsset',
             }
 
     def test_the_feed_renders_an_access(self) -> None:

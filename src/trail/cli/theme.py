@@ -39,6 +39,18 @@ CLASSES: Final[dict[str, str]] = {
     "event.opened": "ansibrightblack",
     "text-area.prompt": "ansicyan bold",
     "selected-option": "ansicyan bold",
+    "triage.header.declined": "bg:#372426 #c3a3a3",
+    "triage.header.declined.active": "bg:ansired #ffffff bold",
+    "triage.header.pending": "bg:#373323 #c4b88d",
+    "triage.header.pending.active": "bg:ansiyellow ansiblack bold",
+    "triage.header.accepted": "bg:#24352a #a1bca8",
+    "triage.header.accepted.active": "bg:ansigreen #ffffff bold",
+    "triage.header.details": "bg:#292d36 #aab0ba",
+    "triage.header.details.active": "bg:ansiblue #ffffff bold",
+    "triage.selection": "bg:ansibrightblack #ffffff",
+    "triage.selection.active": "reverse bold",
+    "triage.key": "bold",
+    "triage.help": "fg:default",
 }
 STYLE: Final = Style.from_dict(CLASSES)
 

@@ -7,7 +7,7 @@ from contextlib import suppress
 from functools import cached_property
 from pathlib import Path
 
-from prompt_toolkit.application import Application
+from prompt_toolkit.application import Application, in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import InMemoryHistory
@@ -29,6 +29,7 @@ from trail.cli.feed import Feed
 from trail.cli.node import Node
 from trail.cli.render import Renderer
 from trail.cli.theme import PROMPT, STYLE
+from trail.cli.triage import Triage
 from trail.event import Event
 from trail.trail import Trail
 
@@ -58,6 +59,21 @@ class Console(Node):
         # whether the Trail existed before this session, so the banner welcomes the user back
         self.returning = returning
         self.restarting = False
+        self.active_triage: Triage | None = None
+
+    async def triage(self, standalone: bool = False) -> None:
+        if self.active_triage is not None:
+            return
+        self.active_triage = Triage(self._trail)
+        try:
+            if standalone:
+                await self.active_triage.run()
+            else:
+                async with in_terminal():
+                    await self.active_triage.run()
+        finally:
+            self.run.cursor = len(self._trail.events)
+            self.active_triage = None
 
     @cached_property
     def run(self) -> Run:
@@ -303,7 +319,7 @@ class Run(Node):
     # whether the watchdog's death has already been reported
     failed = False
 
-    async def __call__(self) -> None:
+    async def __call__(self, triage: bool = False) -> None:
         """
         Run the application until it exits, printing new events to the feed as they arrive.
         See `banner` and `stream` for what is printed. What the watchdog logs as it stops is
@@ -311,7 +327,8 @@ class Run(Node):
         """
         trail = self._trail
         application = self._console.application
-        self.banner()
+        if not triage:
+            self.banner()
         # the events already logged belong to earlier sessions, so the feed starts after them
         self.cursor = len(trail.events.ids)
         # taken before the observer starts, so that nothing recorded between the banner and
@@ -337,7 +354,10 @@ class Run(Node):
                     warnings.catch_warnings(),
                 ):
                     warnings.showwarning = self.warn
-                    await application.run_async()
+                    if triage:
+                        await self._console.triage(standalone=True)
+                    else:
+                        await application.run_async()
             finally:
                 for task in tasks:
                     task.cancel()
@@ -355,6 +375,11 @@ class Run(Node):
         **kwargs: object,
     ) -> None:
         """Print a warning to the feed. Installed as `warnings.showwarning` while running."""
+        triage = self._console.active_triage
+        if triage is not None:
+            triage.message = str(message)
+            triage.application.invalidate()
+            return
         self._feed.info(str(message))
         self._console.application.invalidate()
 
@@ -408,6 +433,8 @@ class Run(Node):
             timestamp: 19:32:48.068
             src_path: /home/user/Downloads/asset.txt
         """
+        if self._console.active_triage is not None:
+            return False
         events = self._trail.events
         identifiers = events.ids
         # a cleared log leaves the cursor past the end, and anything appended afterwards would

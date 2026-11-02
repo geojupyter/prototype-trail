@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from bisect import bisect_left
 from collections.abc import AsyncIterator, Iterable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, ClassVar, Final, Self
 from uuid import uuid4
 
@@ -60,6 +62,7 @@ class Event:
     entry: Entry | None = field(default=None, init=False, repr=False)
     id: str = field(default_factory=lambda: uuid4().hex, repr=True)
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    is_accepted: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         self.id = normalize_id(self.id)
@@ -141,6 +144,7 @@ class Event:
         if event_cls is None:
             raise ValueError(f"Unknown event class: {name!r}")
         identifier = record.pop("entry")
+        record.pop('entry_type', None)
         record["timestamp"] = datetime.fromisoformat(record["timestamp"])
         deferred = {
             field.name: record.pop(field.name)
@@ -165,7 +169,7 @@ class Event:
     def to_record(self) -> dict:
         """
         Returns the event as one record of the log. The entry is held by its id, and every
-        datetime in ISO format.
+        datetime in ISO format. The entry type allows replay after its registration is deleted.
         """
         out = {}
         for event_field in fields(self):
@@ -181,6 +185,7 @@ class Event:
             out["entry"] = None
         else:
             out["entry"] = self.entry.id
+            out['entry_type'] = type(self.entry).__name__
         return out
 
 
@@ -579,6 +584,10 @@ class JSONL(Node):
         self._parent.data.clear()
         self._parent.data.update(loaded)
         self._parent.ids[:] = loaded
+        self._parent.positions.clear()
+        for identifier in loaded:
+            self._parent.positions[identifier] = self._parent.sequence
+            self._parent.sequence += 1
 
     def record2entry(
         self,
@@ -586,8 +595,7 @@ class JSONL(Node):
         identifier: str,
     ) -> Entry:
         """
-        Returns a new entry for the first record about an id. That record is always the event
-        that added the entry.
+        Returns an entry for the first surviving record about its id.
         - An AddDirEvent makes a Dir.
         - A record about a directory makes a DirAsset.
         - Any other record makes an Asset.
@@ -596,11 +604,17 @@ class JSONL(Node):
 
         trail = self._trail
         path = Path(record["src_path"])
-        if record["cls"] == AddDirEvent.__name__:
+        if (
+            record.get('entry_type') == 'Dir'
+            or record['cls'] in (AddDirEvent.__name__, RemoveDirEvent.__name__)
+        ):
             entry = Dir(path=path, id=identifier)
             entry._parent = trail.dirs
             return entry
-        if record.get("is_directory", False):
+        if (
+            record.get('entry_type') == 'DirAsset'
+            or record.get('is_directory', False)
+        ):
             entry = DirAsset(path=path, id=identifier)
         else:
             entry = Asset(path=path, id=identifier)
@@ -616,7 +630,20 @@ class JSONL(Node):
             for event in self._parent
         )
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(text, encoding="utf-8")
+        temporary = None
+        try:
+            with NamedTemporaryFile(
+                mode='w',
+                encoding='utf-8',
+                dir=path.parent,
+                delete=False,
+            ) as file:
+                temporary = Path(file.name)
+                file.write(text)
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def append(self, events: Iterable[Event]) -> None:
         path = self.path
@@ -691,7 +718,12 @@ class Watch(Node):
             else:
                 raise TimeoutError
         """
-        return self.iterate(len(self._parent.ids), timeout)
+        events = self._parent
+        position = events.sequence
+        if events.ids:
+            position = events.positions[events.ids[-1]] + 1
+        out = self.iterate(position, timeout)
+        return out
 
     async def iterate(
         self,
@@ -699,13 +731,12 @@ class Watch(Node):
         timeout: float | None,
     ) -> AsyncIterator[Event]:
         """
-        Yield each event from `position` in the log onward, then suspend until `notify` sets this
+        Yield each event from sequence number `position`, then wait for `notify` to set this
         iteration's waiter.
         - The waiter is held in `waiters` while the iteration runs, and removed when it ends.
         - The waiter is cleared before the backlog is drained. An event appended during a yield
           sets it again, so the event is not missed.
-        - A position past the end of the log is moved back to the end. This happens if events
-          were removed while watching.
+        - Sequence numbers increase even when events are removed.
         - Iteration ends `timeout` seconds after it starts. It never ends on its own if `timeout`
           is None.
         """
@@ -721,12 +752,13 @@ class Watch(Node):
             while True:
                 # cleared before the backlog is drained, so an arrival during a yield is not lost
                 waiter.clear()
-                # events removed while watching would leave the position beyond the collection
-                position = min(position, len(events.ids))
-                while position < len(events.ids):
-                    event = events.data[events.ids[position]]
-                    position += 1
+                index = bisect_left(events.ids, position, key=events.positions.__getitem__)
+                while index < len(events.ids):
+                    identifier = events.ids[index]
+                    event = events.data[identifier]
+                    position = events.positions[identifier] + 1
                     yield event
+                    index = bisect_left(events.ids, position, key=events.positions.__getitem__)
                 if deadline is None:
                     remaining = None
                 else:
@@ -777,6 +809,19 @@ class Events(Collection[str, Event]):
             st_mtime: 2026-10-06 19:48:26
     """
 
+    def __init__(self, parent: Trail | None = None) -> None:
+        super().__init__(parent)
+        self.sequence = 0
+
+    @cached_property
+    def positions(self) -> dict[str, int]:
+        out = {
+            identifier: position
+            for position, identifier in enumerate(self.ids, start=self.sequence)
+        }
+        self.sequence += len(self.ids)
+        return out
+
     @property
     def types(self) -> list[type[Event]]:
         """
@@ -797,6 +842,7 @@ class Events(Collection[str, Event]):
 
     def extend(self, events: Iterable[Event]) -> None:
         """Record `events` together, so a burst of them costs the log one write, not one each."""
+        positions = self.positions
         batch: dict[str, Event] = {}
         for event in events:
             if not isinstance(event, Event):
@@ -814,6 +860,9 @@ class Events(Collection[str, Event]):
             if identifier not in self.data
         ]
         self.ids.extend(appended)
+        for identifier in appended:
+            positions[identifier] = self.sequence
+            self.sequence += 1
         self.data.update(batch)
         if replacing:
             self.jsonl.write()
@@ -827,6 +876,7 @@ class Events(Collection[str, Event]):
     ) -> None:
         if not isinstance(value, Event):
             raise TypeError(f"Expected Event, got {type(value).__name__}")
+        positions = self.positions
         if key in self.data:
             self.data[key] = value
             self.jsonl.write()
@@ -834,12 +884,55 @@ class Events(Collection[str, Event]):
             self.jsonl.append([value])
             self.data[key] = value
             self.ids.append(key)
+            positions[key] = self.sequence
+            self.sequence += 1
             self.watch.notify()
 
     def __delitem__(self, key: str) -> None:
         del self.data[key]
         self.ids.remove(key)
+        self.positions.pop(key, None)
         self.jsonl.write()
+
+    def finalize(
+        self,
+        accepted: Iterable[str],
+        declined: Iterable[str],
+    ) -> None:
+        accepted = set(accepted)
+        declined = set(declined)
+        if accepted & declined:
+            raise ValueError('An event cannot be both accepted and declined')
+        previous = {
+            identifier: self.data[identifier].is_accepted
+            for identifier in accepted
+        }
+        for identifier in declined:
+            if identifier not in self.data:
+                raise KeyError(identifier)
+        records = self.data.copy()
+        identifiers = self.ids[:]
+        for identifier in accepted:
+            self.data[identifier].is_accepted = True
+        for identifier in declined:
+            del self.data[identifier]
+        self.ids[:] = [
+            identifier
+            for identifier in identifiers
+            if identifier not in declined
+        ]
+        try:
+            self.jsonl.write()
+        except BaseException:
+            for identifier, value in previous.items():
+                self.data[identifier].is_accepted = value
+            self.data.clear()
+            self.data.update(records)
+            self.ids[:] = identifiers
+            raise
+        for identifier in declined:
+            self.positions.pop(identifier, None)
+        self.watch.notify()
 
     def clear(self) -> None:
         """
@@ -854,6 +947,7 @@ class Events(Collection[str, Event]):
         ):
             session.accesses.drop()
         super().clear()
+        self.positions.clear()
         self.jsonl.write()
         if self is trail.events:
             trail.dirs.relog()
