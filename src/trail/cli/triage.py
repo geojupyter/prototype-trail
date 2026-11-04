@@ -8,16 +8,29 @@ from pathlib import Path
 from types import NotImplementedType
 
 from prompt_toolkit.application import Application
+from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.data_structures import Point
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import StyleAndTextTuples, fragment_list_to_text
+from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.key_processor import KeyPressEvent
-from prompt_toolkit.layout import Dimension, FormattedTextControl, HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout import (
+    BufferControl,
+    Dimension,
+    FormattedTextControl,
+    HSplit,
+    Layout,
+    VSplit,
+    Window,
+)
 from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.utils import get_cwidth
+from prompt_toolkit.widgets import TextArea
 
 from trail import fmt
+from trail.cli.command import Query
 from trail.cli.render import Renderer
 from trail.cli.theme import INDENT, STYLE, VERB_STYLES
 from trail.event import Event
@@ -37,6 +50,7 @@ class Pane(FormattedTextControl):
         self.triage = triage
         self.name = name
         self.ids: list[str] = []
+        self.total = 0
         self.selected: str | None = None
         super().__init__(self.rows, focusable=True, get_cursor_position=self.position)
         self.window = Window(
@@ -57,6 +71,8 @@ class Pane(FormattedTextControl):
 
     def heading(self) -> str:
         out = f' {self.name} · {len(self.ids)}'
+        if self.triage.matches is not None:
+            out += f' of {self.total}'
         return out
 
     def header_style(self) -> str:
@@ -198,22 +214,79 @@ class Triage:
         ]
         self.active = self.panes[1]
         self.inspector = Inspector(self)
+        self.query = TextArea(
+            height=1,
+            prompt=' Query › ',
+            multiline=False,
+            wrap_lines=False,
+            focus_on_click=True,
+            history=InMemoryHistory(),
+        )
+        self.query.window.style = self.query_style
+        self.query.buffer.on_text_changed += self.edited
+        self.matches: set[str] | None = None
+        self.expression = ''
         self.escaping = False
+        self.confirming = 0
         self.message = ''
         self.sync()
 
     @property
-    def focused(self) -> Pane | Inspector:
+    def focused(self) -> Pane | Inspector | BufferControl:
         out = self.active
         application = self.__dict__.get('application')
         if application is not None:
             out = application.layout.current_control
         return out
 
+    def query_style(self) -> str:
+        out = 'class:triage.header.query'
+        if self.focused is self.query.control:
+            out += '.active'
+        return out
+
+    def edited(self, buffer: Buffer) -> None:
+        self.changed()
+
+    def apply_query(self) -> None:
+        expression = self.query.text.strip()
+        if not expression:
+            self.clear_query()
+            return
+        root = Path.cwd()
+        if self.trail.dir is not None:
+            root = self.trail.dir.parent
+        candidates = self.trail.events.select('is_accepted=false')
+        query = Query(candidates, root)
+        try:
+            selected = query(expression)
+        except (TypeError, ValueError) as error:
+            self.changed()
+            self.message = f'Query: {error}'
+            return
+        self.matches = set(selected.ids)
+        self.expression = expression
+        self.query.buffer.append_to_history()
+        self.sync()
+        self.focus(self.active)
+        self.message = f'Query: {len(selected)} matching events. Resubmit to include new arrivals.'
+
+    def clear_query(self) -> None:
+        self.query.text = ''
+        self.expression = ''
+        self.matches = None
+        self.sync()
+        self.focus(self.active)
+        self.message = 'Query cleared.'
+
     def sync(self) -> None:
         groups: dict[str, list[str]] = {
             name: []
             for name in (DECLINED, PENDING, ACCEPTED)
+        }
+        totals = {
+            name: 0
+            for name in groups
         }
         for identifier in self.trail.events.ids:
             if identifier not in self.order:
@@ -221,19 +294,23 @@ class Triage:
             event = self.trail.events[identifier]
             if not event.is_accepted:
                 name = self.decisions.get(identifier, PENDING)
-                groups[name].append(identifier)
+                totals[name] += 1
+                if self.matches is None or identifier in self.matches:
+                    groups[name].append(identifier)
         for pane in self.panes:
+            pane.total = totals[pane.name]
             pane.replace(groups[pane.name], follow=pane.name == PENDING)
 
     def changed(self) -> None:
         self.escaping = False
+        self.confirming = 0
         self.message = ''
 
     def navigate(self, step: int) -> None:
         index = max(0, min(self.panes.index(self.active) + step, 2))
         self.focus(self.panes[index])
 
-    def focus(self, control: Pane | Inspector) -> None:
+    def focus(self, control: Pane | Inspector | BufferControl) -> None:
         if isinstance(control, Pane):
             self.active = control
         self.application.layout.focus(control)
@@ -289,9 +366,16 @@ class Triage:
             control.window.vertical_scroll = max(0, info.vertical_scroll + step * height)
         control.move(step * height)
 
-    def decide(self, accepted: bool) -> None:
-        identifier = self.active.selected
-        if identifier is None:
+    def decide(
+        self,
+        accepted: bool,
+        all_events: bool = False,
+    ) -> None:
+        if all_events:
+            identifiers = self.active.ids.copy()
+        elif self.active.selected is not None:
+            identifiers = [self.active.selected]
+        else:
             return
         if accepted:
             destination = ACCEPTED
@@ -301,18 +385,58 @@ class Triage:
             destination = DECLINED
             if self.active.name == ACCEPTED:
                 destination = PENDING
-        if destination == PENDING:
-            self.decisions.pop(identifier, None)
-        else:
-            self.decisions[identifier] = destination
+        for identifier in identifiers:
+            if destination == PENDING:
+                self.decisions.pop(identifier, None)
+            else:
+                self.decisions[identifier] = destination
         self.sync()
         self.changed()
 
     def reset(self) -> None:
         self.decisions.clear()
         self.sync()
-        self.message = 'Choices reset. Esc again exits.'
-        self.escaping = True
+        self.changed()
+        self.message = 'Decisions reset.'
+
+    def enter(self) -> None:
+        if (
+            self.focused is self.query.control
+            or self.query.text.strip() != self.expression
+        ):
+            self.apply_query()
+            return
+        if not self.decisions:
+            self.changed()
+            self.message = 'No decisions to apply.'
+            return
+        self.escaping = False
+        self.confirming += 1
+        accepted = sum(value == ACCEPTED for value in self.decisions.values())
+        declined = sum(value == DECLINED for value in self.decisions.values())
+        if self.confirming == 1:
+            self.message = (
+                f'Apply {accepted} accepted and delete {declined}? '
+                'Press Enter twice more to apply.'
+            )
+        elif self.confirming == 2:
+            self.message = (
+                f'Apply {accepted} accepted and delete {declined}? '
+                'Press Enter once more to apply.'
+            )
+        else:
+            self.confirming = 0
+            self.finalize()
+
+    def escape(self) -> None:
+        if self.query.text or self.matches is not None:
+            self.clear_query()
+        elif self.escaping:
+            self.application.exit()
+        else:
+            self.changed()
+            self.escaping = True
+            self.message = 'Discard unapplied decisions and exit? Press Esc again to exit.'
 
     def finalize(self) -> None:
         events = self.trail.events
@@ -335,10 +459,21 @@ class Triage:
         self.decisions.clear()
         self.sync()
         self.escaping = False
+        self.confirming = 0
         self.message = f'Finalized: {len(accepted)} accepted, {len(declined)} deleted.'
 
     def footer(self) -> StyleAndTextTuples:
         out: StyleAndTextTuples = []
+        if self.focused is self.query.control:
+            out = [
+                ('class:triage.key', '[Enter]'),
+                ('class:triage.help', ' Apply query  '),
+                ('class:triage.key', '[Esc]'),
+                ('class:triage.help', ' Clear query  '),
+                ('class:triage.key', '[Tab]'),
+                ('class:triage.help', ' Return to events'),
+            ]
+            return out
         if self.focused is self.inspector:
             movement = 'Scroll details'
             boundary = 'Top/bottom'
@@ -347,12 +482,18 @@ class Triage:
             movement = 'Select event'
             boundary = 'First/last event'
             focus = 'Focus details'
+        escape_action = 'Confirm exit'
+        if self.query.text or self.matches is not None:
+            escape_action = 'Clear query'
         groups = [
             [
-                ('Y', 'Accept event'),
-                ('N', 'Decline event'),
-                ('Enter', 'Apply decisions'),
-                ('Esc', 'Reset decisions'),
+                ('/', 'Query'),
+                ('y', 'Accept event'),
+                ('n', 'Decline event'),
+                ('Shift+Y', f'Accept all {len(self.active.ids)}'),
+                ('Shift+N', f'Decline all {len(self.active.ids)}'),
+                ('Enter ×3', 'Apply decisions'),
+                ('Esc', escape_action),
                 ('Esc twice', 'Exit'),
             ],
             [
@@ -383,56 +524,67 @@ class Triage:
     @cached_property
     def bindings(self) -> KeyBindings:
         bindings = KeyBindings()
+        browsing = Condition(lambda: self.focused is not self.query.control)
 
-        @bindings.add('left')
+        @bindings.add('left', filter=browsing)
         def left(event: KeyPressEvent) -> None:
             self.navigate(-1)
 
-        @bindings.add('right')
+        @bindings.add('right', filter=browsing)
         def right(event: KeyPressEvent) -> None:
             self.navigate(1)
 
-        @bindings.add('up')
+        @bindings.add('up', filter=browsing)
         def up(event: KeyPressEvent) -> None:
             self.focused.move(-1)
 
-        @bindings.add('down')
+        @bindings.add('down', filter=browsing)
         def down(event: KeyPressEvent) -> None:
             self.focused.move(1)
 
         @bindings.add('tab')
         @bindings.add('s-tab')
         def inspect(event: KeyPressEvent) -> None:
-            self.inspect()
+            if self.focused is self.query.control:
+                self.focus(self.active)
+            else:
+                self.inspect()
 
-        @bindings.add('home')
+        @bindings.add('/', filter=browsing)
+        def query(event: KeyPressEvent) -> None:
+            self.focus(self.query.control)
+
+        @bindings.add('home', filter=browsing)
         def home(event: KeyPressEvent) -> None:
             self.focused.home()
 
-        @bindings.add('end')
+        @bindings.add('end', filter=browsing)
         def end(event: KeyPressEvent) -> None:
             self.focused.end()
 
-        @bindings.add('y')
-        @bindings.add('Y')
+        @bindings.add('y', filter=browsing)
         def accept(event: KeyPressEvent) -> None:
             self.decide(True)
 
-        @bindings.add('n')
-        @bindings.add('N')
+        @bindings.add('n', filter=browsing)
         def decline(event: KeyPressEvent) -> None:
             self.decide(False)
 
+        @bindings.add('Y', filter=browsing)
+        def accept_all(event: KeyPressEvent) -> None:
+            self.decide(True, all_events=True)
+
+        @bindings.add('N', filter=browsing)
+        def decline_all(event: KeyPressEvent) -> None:
+            self.decide(False, all_events=True)
+
         @bindings.add('enter')
         def finalize(event: KeyPressEvent) -> None:
-            self.finalize()
+            self.enter()
 
         @bindings.add('escape')
         def escape(event: KeyPressEvent) -> None:
-            if self.escaping:
-                event.app.exit()
-            else:
-                self.reset()
+            self.escape()
 
         @bindings.add('escape', '[', 'I')
         @bindings.add('escape', '[', 'O')
@@ -444,11 +596,11 @@ class Triage:
         def quit(event: KeyPressEvent) -> None:
             event.app.exit()
 
-        @bindings.add('pageup')
+        @bindings.add('pageup', filter=browsing)
         def pageup(event: KeyPressEvent) -> None:
             self.page(-1)
 
-        @bindings.add('pagedown')
+        @bindings.add('pagedown', filter=browsing)
         def pagedown(event: KeyPressEvent) -> None:
             self.page(1)
 
@@ -476,7 +628,7 @@ class Triage:
             wrap_lines=True,
             dont_extend_height=True,
         )
-        container = HSplit([top, inspector, status, footer])
+        container = HSplit([top, inspector, self.query, status, footer])
         layout = Layout(container, focused_element=self.active)
         out = Application(
             layout=layout,

@@ -181,6 +181,180 @@ def test_pending_follows_tail_but_keeps_an_earlier_selection() -> None:
     assert pending.selected == fourth.id
 
 
+def test_query_and_bulk_moves_keep_a_fixed_set_and_preserve_hidden_decisions() -> None:
+    trail = Trail()
+    events = [
+        record(trail)
+        for _ in range(6)
+    ]
+    events[2].is_accepted = True
+    triage = Triage(trail)
+    triage.decisions[events[0].id] = DECLINED
+    triage.query.text = '-2:'
+    triage.apply_query()
+    pending = triage.panes[1]
+    assert pending.ids == [events[4].id, events[5].id]
+    assert pending.total == 4
+    assert '2 of 4' in pending.heading()
+
+    triage.decide(True)
+    assert pending.ids == [events[4].id]
+    triage.decide(True, all_events=True)
+    assert not pending.ids
+    assert triage.panes[2].ids == [events[4].id, events[5].id]
+    assert triage.decisions[events[0].id] == DECLINED
+    assert not events[4].is_accepted
+    assert not events[5].is_accepted
+
+    triage.focus(triage.panes[2])
+    triage.decide(False, all_events=True)
+    assert pending.ids == [events[4].id, events[5].id]
+    assert triage.decisions == {events[0].id: DECLINED}
+    triage.focus(pending)
+    triage.decide(False, all_events=True)
+    assert triage.panes[0].ids == [events[4].id, events[5].id]
+
+    arriving = record(trail)
+    triage.sync()
+    assert all(arriving.id not in pane.ids for pane in triage.panes)
+    assert not pending.ids
+    triage.apply_query()
+    assert triage.matches == {events[5].id, arriving.id}
+    assert pending.ids == [arriving.id]
+    assert triage.panes[0].ids == [events[5].id]
+
+    choices = triage.decisions.copy()
+    triage.clear_query()
+    assert triage.matches is None
+    assert triage.decisions == choices
+    assert triage.panes[0].ids == [events[0].id, events[4].id, events[5].id]
+    assert pending.ids == [events[1].id, events[3].id, arriving.id]
+
+
+def test_query_reuses_relative_paths_and_combines_predicates_with_slices(tmp_path: Path) -> None:
+    trail = Trail(tmp_path, ontrail=None)
+    events = [
+        WatchdogEvent(src_path=str(tmp_path / path), event_type=verb)
+        for path, verb in (
+            ('map.jGIS', 'modified'),
+            ('other.jGIS', 'modified'),
+            ('map.jGIS', 'opened'),
+            ('map.jGIS', 'modified'),
+        )
+    ]
+    trail.events.extend(events)
+    triage = Triage(trail)
+    triage.query.text = 'src_path=map.jGIS event_type=modified -1:'
+    triage.apply_query()
+    assert triage.active.ids == [events[3].id]
+    triage.decide(False, all_events=True)
+    assert triage.decisions == {events[3].id: DECLINED}
+
+
+@pytest.mark.parametrize('expression', ['verb=updated or', 'is_accepted=invalid', '::0'])
+def test_invalid_query_preserves_the_applied_filter_and_decisions(expression: str) -> None:
+    trail = Trail()
+    events = [
+        record(trail)
+        for _ in range(3)
+    ]
+    triage = Triage(trail)
+    triage.query.text = '-2:'
+    triage.apply_query()
+    triage.decide(True)
+    choices = triage.decisions.copy()
+    triage.query.text = expression
+    triage.apply_query()
+    assert triage.matches == {events[1].id, events[2].id}
+    assert triage.expression == '-2:'
+    assert triage.active.ids == [events[1].id]
+    assert triage.decisions == choices
+    assert triage.message.startswith('Query: ')
+
+
+def test_finalization_requires_three_enters_and_includes_hidden_decisions() -> None:
+    trail = Trail()
+    accepted = record(trail)
+    declined = record(trail)
+    visible = record(trail)
+    triage = Triage(trail)
+    triage.decisions = {
+        accepted.id: ACCEPTED,
+        declined.id: DECLINED,
+    }
+    triage.query.text = '-1:'
+    triage.apply_query()
+    assert triage.active.ids == [visible.id]
+    triage.enter()
+    assert triage.confirming == 1
+    assert '1 accepted and delete 1' in triage.message
+    assert not accepted.is_accepted
+    triage.active.move(-1)
+    assert triage.confirming == 0
+    triage.enter()
+    triage.enter()
+    assert triage.confirming == 2
+    assert not accepted.is_accepted
+    assert declined.id in trail.events
+    triage.enter()
+    assert accepted.is_accepted
+    assert declined.id not in trail.events
+    assert triage.active.ids == [visible.id]
+    assert triage.confirming == 0
+
+
+@pytest.mark.parametrize('finalize', [False, True])
+@pytest.mark.parametrize('accepted', [False, True])
+def test_keyboard_query_typing_bulk_actions_and_confirmation(
+    finalize: bool,
+    accepted: bool,
+) -> None:
+    async def run() -> None:
+        with (
+            create_pipe_input() as pipe,
+            create_app_session(input=pipe, output=DummyOutput()),
+        ):
+            trail = Trail()
+            events = [
+                record(trail)
+                for _ in range(6)
+            ]
+            for event in events[::2]:
+                event.data['metadata']['label'] = 'YnNy'
+            triage = Triage(trail)
+            keys = '/data.metadata.label=YnNy\x1b[H\x1b[F\r'
+            if accepted:
+                keys += 'Y'
+                destination = ACCEPTED
+            else:
+                keys += 'N'
+                destination = DECLINED
+            if finalize:
+                keys += '\r\r\r\x03'
+            else:
+                keys += '\x1b\x1b\x1b'
+            pipe.send_text(keys)
+            async with asyncio.timeout(5):
+                await triage.run()
+            for index, event in enumerate(events):
+                matched = index % 2 == 0
+                assert event.is_accepted == (finalize and accepted and matched)
+                assert (event.id in trail.events) == (not finalize or accepted or not matched)
+            if finalize:
+                assert not triage.decisions
+            else:
+                assert triage.decisions == {
+                    event.id: destination
+                    for event in events[::2]
+                }
+                assert triage.matches is None
+                assert triage.query.text == ''
+            assert not trail.events.watch.waiters
+            assert not trail.lock.holders
+
+    asyncio.run(run())
+
+
 def test_inspector_uses_the_event_view() -> None:
     trail = Trail()
     event = AddDirEvent(src_path='/project/data', rule='data/*.png')
@@ -254,7 +428,7 @@ def test_selected_events_have_independent_watcher_positions() -> None:
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('keys', ['y\r\x1b\x1b', 'y\x1b\x1b', 'n\x03'])
+@pytest.mark.parametrize('keys', ['y\r\r\r\x1b\x1b', 'y\x1b\x1b', 'n\x03'])
 def test_keyboard_finalize_reset_and_exit(keys: str) -> None:
     async def run() -> None:
         with (
@@ -293,7 +467,7 @@ def test_console_returns_from_triage_without_losing_the_live_feed() -> None:
                     or not console.active_triage.application.is_running
                 ):
                     await asyncio.sleep(0.01)
-                pipe.send_text('y\r\x03')
+                pipe.send_text('y\r\r\r\x03')
                 while console.active_triage is not None:
                     await asyncio.sleep(0.01)
                 assert event.is_accepted

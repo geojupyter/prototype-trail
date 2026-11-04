@@ -47,6 +47,8 @@ CLASSES: Final[dict[str, str]] = {
     "triage.header.accepted.active": "bg:ansigreen #ffffff bold",
     "triage.header.details": "bg:#292d36 #aab0ba",
     "triage.header.details.active": "bg:ansiblue #ffffff bold",
+    "triage.header.query": "bg:#292d36 #aab0ba",
+    "triage.header.query.active": "bg:ansiblue #ffffff bold",
     "triage.selection": "bg:ansibrightblack #ffffff",
     "triage.selection.active": "reverse bold",
     "triage.key": "bold",

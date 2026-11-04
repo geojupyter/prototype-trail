@@ -7,9 +7,11 @@ from pathlib import Path
 import jsonschema
 import pytest
 import yaml
+from prompt_toolkit.formatted_text import StyleAndTextTuples, fragment_list_to_text
 
 from trail import Trail
 from trail.cli.command import Query
+from trail.cli.console import Console
 from trail.cli.render import Renderer
 from trail.event import Event
 from trail.jupyter.event import (
@@ -89,6 +91,79 @@ def test_schema_registry_and_roundtrip(
         }
         assert event.zoom == 3.5
         assert event.extent == [1, 2, 3, 4]
+
+
+def test_consecutive_viewports_record_render_and_reopen(
+        trail: Trail,
+        server: Server,
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    printed: list[StyleAndTextTuples] = []
+
+    def show(rows: list[StyleAndTextTuples]) -> None:
+        printed.extend(rows)
+
+    console = Console(trail, trail.dir.parent)
+    monkeypatch.setattr(console.feed, 'show', show)
+    console.run.cursor = len(trail.events)
+    snapshots = [
+        {
+            'coordinates': {
+                'x': 0,
+                'y': 0,
+            },
+            'zoom': 0,
+            'extent': [-180, -90, 180, 90],
+        },
+        {
+            'coordinates': {
+                'x': 10,
+                'y': 20,
+            },
+            'zoom': 4.25,
+            'extent': [5, 15, 15, 25],
+        },
+    ]
+    recorded: list[ViewportV1Event] = []
+    first_rows: list[StyleAndTextTuples] = []
+    for snapshot in snapshots:
+        obj = {
+            'document_path': 'map.jGIS',
+            'new': snapshot,
+        }
+        payload = {
+            'schema_id': ViewportV1Event.schema,
+            'subject': '42',
+            'verb': 'moved',
+            'object': obj,
+        }
+        text = json.dumps(payload)
+        message = trail.jupyter.session.consumer.receive(server, text)
+        assert message.outcome == 'recorded'
+        event = trail.events[message.event]
+        assert isinstance(event, ViewportV1Event)
+        assert event.data['object']['new'] == snapshot
+        recorded.append(event)
+        assert len(trail.events.select('cls=ViewportV1Event')) == len(recorded)
+        assert console.run.drain()
+        assert printed[:len(first_rows)] == first_rows
+        if len(recorded) == 1:
+            first_rows = list(printed)
+
+    assert recorded[0].id != recorded[1].id
+    assert not console.run.drain()
+    output = '\n'.join(
+        fragment_list_to_text(row)
+        for row in printed
+    )
+    assert output.count('ViewportV1Event') == 2
+    assert 'zoom: 0' in output
+    assert 'zoom: 4.25' in output
+    reopened = Trail(trail.dir)
+    for event, snapshot in zip(recorded, snapshots, strict=True):
+        rebuilt = reopened.events[event.id]
+        assert rebuilt.to_record() == event.to_record()
+        assert rebuilt.data['object']['new'] == snapshot
 
 
 def test_null_entry_and_unknown_schema_survive_replay(
