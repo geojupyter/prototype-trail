@@ -8,11 +8,11 @@ This reports the **first completed movement**, not the first wheel tick. OpenLay
 
 Checked on 2026-11-01 against the working trees of eventfeed (`focus`, HEAD `fb9b71fd`) and Trail (`triage`, HEAD `e2b2118`). Both contain existing uncommitted changes. This document proposes changes; it does not implement them.
 
-- The [viewport emitter](/home/arstneio/PyCharmProjects/eventfeed/python/jupytergis_core/src/eventFeed/plugin.ts:82) restarts `VIEWPORT_SETTLE_MS = 10_000` on every local awareness update. That is the deliberate delay.
-- The [map component](/home/arstneio/PyCharmProjects/eventfeed/packages/base/src/mainview/mainView.tsx:613) updates viewport awareness through a 200 ms throttle attached only to `change:center`. A zoom that leaves the center fixed can be missed. Its existing `moveend` handler already reads the final view and saves map options.
-- The installed OpenLayers 10.9.0 [implementation](/home/arstneio/PyCharmProjects/eventfeed/node_modules/ol/Map.js:1676) dispatches `moveend` once the view is neither interacting nor animating. It does not wait for tile loading. The public [Map API](https://openlayers.org/en/latest/apidoc/module-ol_Map-Map.html) distinguishes movement completion from rendering completion.
-- Trail's [subscription](/home/arstneio/PyCharmProjects/trail/src/trail/jupyter/subscription.py:37) passes each WebSocket message directly to its [consumer](/home/arstneio/PyCharmProjects/trail/src/trail/jupyter/consumer.py:98), which appends the event. The two-second session interval discovers servers; it does not batch subscribed messages.
-- Trail already has [ViewportV1Event](/home/arstneio/PyCharmProjects/trail/src/trail/jupyter/event.py:232), with center, zoom and extent. Its [console feed](/home/arstneio/PyCharmProjects/trail/src/trail/cli/feed.py:21) prints rows once. An event containing the completed movement needs no subsequent update.
+- The [viewport emitter](../../eventfeed/python/jupytergis_core/src/eventFeed/plugin.ts#L82) restarts `VIEWPORT_SETTLE_MS = 10_000` on every local awareness update. That is the deliberate delay.
+- The [map component](../../eventfeed/packages/base/src/mainview/mainView.tsx#L613) updates viewport awareness through a 200 ms throttle attached only to `change:center`. A zoom that leaves the center fixed can be missed. Its existing `moveend` handler already reads the final view and saves map options.
+- The installed OpenLayers 10.9.0 [implementation](../../eventfeed/node_modules/ol/Map.js#L1676) dispatches `moveend` once the view is neither interacting nor animating. It does not wait for tile loading. The public [Map API](https://openlayers.org/en/latest/apidoc/module-ol_Map-Map.html) distinguishes movement completion from rendering completion.
+- Trail's [subscription](../src/trail/jupyter/subscription.py#L37) passes each WebSocket message directly to its [consumer](../src/trail/jupyter/consumer.py#L98), which appends the event. The two-second session interval discovers servers; it does not batch subscribed messages.
+- Trail already has [ViewportV1Event](../src/trail/jupyter/event.py#L232), with center, zoom and extent. Its [console feed](../src/trail/cli/feed.py#L21) prints rows once. An event containing the completed movement needs no subsequent update.
 
 The initial scope is direct map navigation: drag, wheel/trackpad, touch zoom, keyboard navigation and zoom controls. Automatic initialization, collaborator following, restoring the local view after following, resizing and programmatic camera changes must not become local navigation events. GUI commands such as “zoom to layer” can be added separately with explicit origin information; they must not be guessed from any camera change.
 
@@ -24,13 +24,13 @@ Keep the existing awareness stream for collaboration. It has different timing an
 
 ## Capture completed local navigation
 
-Add a small `ViewportMoves` helper beside [MainView](/home/arstneio/PyCharmProjects/eventfeed/packages/base/src/mainview/mainView.tsx:252), in `packages/base/src/mainview/viewportMoves.ts`. `MainView` owns one helper per rendered map. The helper observes navigation and `moveend`, and calls the model only for an eligible completed movement.
+Add a small `ViewportMoves` helper beside [MainView](../../eventfeed/packages/base/src/mainview/mainView.tsx#L252), in `packages/base/src/mainview/viewportMoves.ts`. `MainView` owns one helper per rendered map. The helper observes navigation and `moveend`, and calls the model only for an eligible completed movement.
 
 Its behavior should be:
 
 - Mark movement caused by an accepted local navigation interaction. Include the zoom controls, whose target can be outside the map viewport. A generic click, pointer-down or document keypress is not sufficient evidence of navigation.
 - Associate that evidence with the current movement, including kinetic panning and zoom animation. Clear it after completion or cancellation. A no-op at a zoom limit must not leave permission for a later programmatic movement to emit.
-- Suppress initialization and automatic camera operations. Clear pending local navigation when entering follow mode; keep follow restoration suppressed through its completion even though `remoteUser` has already cleared. The current [follow handler](/home/arstneio/PyCharmProjects/eventfeed/packages/base/src/mainview/mainView.tsx:2670) contains both paths.
+- Suppress initialization and automatic camera operations. Clear pending local navigation when entering follow mode; keep follow restoration suppressed through its completion even though `remoteUser` has already cleared. The current [follow handler](../../eventfeed/packages/base/src/mainview/mainView.tsx#L2670) contains both paths.
 - Read center, zoom and extent directly from the current OpenLayers view at `moveend`, using the current map size. Copy the values into a snapshot. Do not read the last throttled awareness value: it can be stale or absent for fixed-center zoom.
 - Accept zoom `0`; test for missing or non-finite values instead of truthiness. Reject missing size and incomplete snapshots. Compare the completed state with the state at navigation start to suppress no-op movements.
 - Establish the initial baseline without emitting. Do not unconditionally discard the first `moveend`, because it may be the user's first real movement. Reset the baseline on view replacement and automatic movement.
@@ -40,9 +40,9 @@ Its behavior should be:
 
 ## Carry the snapshot through the model
 
-The document model, `JupyterGISModel` in `packages/schema/src/model.ts`, is already how the plugin observes map activity. Extend its public contract, [IJupyterGISModel](/home/arstneio/PyCharmProjects/eventfeed/packages/schema/src/interfaces.ts:307), with a `viewportMoved` signal and a `notifyViewportMoved` method used by `ViewportMoves`.
+The document model, `JupyterGISModel` in `packages/schema/src/model.ts`, is already how the plugin observes map activity. Extend its public contract, [IJupyterGISModel](../../eventfeed/packages/schema/src/interfaces.ts#L307), with a `viewportMoved` signal and a `notifyViewportMoved` method used by `ViewportMoves`.
 
-Use a small typed payload containing `viewport: IViewPortState` and `emitter: string`, the originating main-view ID. The existing [IViewPortState](/home/arstneio/PyCharmProjects/eventfeed/packages/schema/src/interfaces.ts:77) already defines coordinates, zoom and extent. The view ID keeps ownership explicit when multiple views share a document model; it need not be added to the wire format.
+Use a small typed payload containing `viewport: IViewPortState` and `emitter: string`, the originating main-view ID. The existing [IViewPortState](../../eventfeed/packages/schema/src/interfaces.ts#L77) already defines coordinates, zoom and extent. The view ID keeps ownership explicit when multiple views share a document model; it need not be added to the wire format.
 
 This signal is local to the browser model. Emitting it must not update awareness or shared document options. Preserve the map's existing option-saving and collaboration behavior. Model disposal clears its signal connections; each map helper separately disposes its own listeners.
 
@@ -56,7 +56,7 @@ Replace `wireViewportEvents`' awareness listener with a listener to `viewportMov
 
 Keep one subscription per model, using the plugin's existing model-deduplication approach. Tie the subscription to the model rather than the first widget: closing one of two views must not disable the remaining view. Guard deferred initial-sync callbacks against disposed models. Map readiness and input-origin filtering prevent initialization events; subscription timing alone does not.
 
-The [viewport schema](/home/arstneio/PyCharmProjects/eventfeed/python/jupytergis_core/jupytergis_core/event_schemas/viewport_v1.yaml) already describes a viewport after movement, so no schema version or Trail runtime change is needed. Preserve the existing emission error reporting. Update the [feed explanation](/home/arstneio/PyCharmProjects/eventfeed/docs/contributor_guide/explanation/events.md) to remove both the 10-second instruction and the stale claim that viewport events are unimplemented.
+The [viewport schema](../../eventfeed/python/jupytergis_core/jupytergis_core/event_schemas/viewport_v1.yaml) already describes a viewport after movement, so no schema version or Trail runtime change is needed. Preserve the existing emission error reporting. Update the [feed explanation](../../eventfeed/docs/contributor_guide/explanation/events.md) to remove both the 10-second instruction and the stale claim that viewport events are unimplemented.
 
 Several separate movements can produce several rows. Keep them as separate immutable events. Folding or rewriting console history is outside this change and must not add another wait.
 
