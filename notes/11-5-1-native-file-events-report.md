@@ -18,23 +18,7 @@ These interfaces differ in scope, correlation identifiers, and deployment requir
 | Linux fanotify | File activity, closes, process identity | `CAP_SYS_ADMIN` to receive other processes' PIDs; Python wrapper documents root execution |
 | macOS Endpoint Security, system-wide client | Opens, writes, closes, file changes, process identity | Apple-granted entitlement, signed/provisioned executable, root, Full Disk Access |
 | macOS Endpoint Security, descendant client on macOS 27+ | Events from the collector and its descendant processes | Entitlement and signing/provisioning; no root or Full Disk Access; collector must be an ancestor of the observed processes |
-| Windows ETW kernel file tracing | Opens, reads, writes, cleanup, file-object correlation, thread/process attribution | Elevated collector or appropriately privileged service for the proposed kernel tracing route |
-| Windows USN standard reader | File identity, accumulated change reasons, close records; no writer PID | Administrator privileges for the standard volume reader |
-| Windows USN unprivileged reader | Restricted journal reading without writer PID | No elevation for restricted reads; inaccessible filenames are withheld; suitable filesystem and existing journal required |
-
-The sections below give the API contracts and sources behind this comparison.
-
-> Are Windows and macOS missing equivalents of Linux's writable-close notifications, or can Trail obtain them outside watchdog?
-
-> **Codex:** The operating systems expose richer native sources: Endpoint Security on macOS and kernel ETW on Windows. Watchdog's backend coverage is the limitation. Trail can collect native events separately and retain its Python folding and logging logic. USN provides a narrower Windows alternative without writer attribution.
-
-> Is the main permissions difference that Linux watchdog works without elevation, whereas Endpoint Security and kernel ETW require it?
-
-> **Codex:** For system-wide collection, broadly yes. Inotify supplies closes without root but lacks process identity; fanotify needs additional privilege for other processes' PIDs. Kernel ETW needs a privileged collector. System-wide Endpoint Security adds an Apple entitlement and Full Disk Access, but its descendant-only client avoids root and privacy approval while retaining the entitlement requirement. Restricted USN reading is another unprivileged exception.
-
-## What a close establishes
-
-A file close is a useful boundary, but it does not identify a complete application operation. A program can reopen a file, keep another writable open alive, or write several files during one save.
+ral files during one save.
 
 On Linux, `IN_CLOSE_WRITE` means that a file opened with write access was closed. It can occur without any data having been written. The earlier report's statement that it “marks the end of a write exactly” is therefore too strong. Its trace supports that interpretation for the observed GDAL operation, not for arbitrary writers. [Linux inotify manual](https://man7.org/linux/man-pages/man7/inotify.7.html)
 
