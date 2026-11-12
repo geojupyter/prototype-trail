@@ -21,23 +21,40 @@ Inputs normally persist in the profile's SQLite database, commonly `~/.ipython/p
 
 Trail's [JupyterSession](/home/arstneio/PyCharmProjects/trail/src/trail/jupyter/session.py:19) manages server discovery and subscriptions. Its [Consumer](/home/arstneio/PyCharmProjects/trail/src/trail/jupyter/consumer.py:49) handles JupyterGIS and Contents events. Execution history would add notebook code to that workflow record.
 
+**Priority.** Capture new executions through IOPub, the kernel's existing broadcast channel. `execute_input` carries submitted code and the execution number. Related messages report output, errors, and busy/idle status. Group them by `parent_header.msg_id`. An idle message marks completion. The requesting frontend receives the explicit result status in `execute_reply`. Notebook and cell attribution require a separate association. Keep history retrieval as an optional follow-up for executions Trail missed.
+
+> What would IPython history add if Trail already listened to live kernel messages? Is recovering earlier executions its main use?
+
+> **Codex:** Yes. Live kernel messages supply the code, execution number, outputs, errors, and execution boundaries as they happen. IPython history adds access to retained inputs and their order, including transformed source. Its session numbers usually identify kernel runs and cannot establish notebook origin on their own. Prioritize live capture and defer history recovery until Trail needs to fill gaps.
+
 1. **Associate tracked notebooks with kernels.** Query each connected server's `GET /api/sessions`, which returns document paths and kernel information. For example, `analysis.ipynb → kernel K` tells Trail which kernel to query for that notebook and which tracked notebook `Asset` is a candidate for the returned executions. Preserve these associations as notebooks are renamed or kernels restart. A current association alone does not prove which notebook submitted an earlier input: another notebook or console could have used the same kernel. These server session UUIDs are distinct from IPython's integer history session numbers. [Server API](https://jupyter-server.readthedocs.io/en/latest/developers/rest-api.html#get--api-sessions)
 
 > WHat does associating tracked notebooks with kernels do for us?
 
 > **Codex:** It connects Trail's file-based model to the kernel-based history: it identifies the kernel to query and the notebook asset an execution may belong to. I expanded the text to distinguish that association from proof of origin. Shared kernels and earlier executions still require a recorded notebook/cell association.
 
-2. **Turn history entries into execution records.** Send a `history_request` with `hist_access_type='range'`, `session=0`, and `raw=True` for the current run. Each returned execution number and source can become a recovered execution event. Match it to any previously observed live execution by server, the kernel's message-header `session` UUID, and execution number; the UUID changes on kernel restart. For live messages, `parent_header.msg_id` links outputs and status messages to their originating request. A frontend observer must separately associate that request with its notebook and cell. Historical entries do not retain request IDs. [History protocol](https://jupyter-client.readthedocs.io/en/stable/messaging.html#history), [message identity and parent headers](https://jupyter-client.readthedocs.io/en/stable/messaging.html#parent-header)
+2. **Capture live executions.** Capture notebook identity, cell identity, start/end times, and success or error. A Python kernel extension can use `pre_run_cell` and `post_run_cell`; the latter supplies the execution count and errors. A cell ID is available when supplied by the frontend. The collector must add timestamps at the callbacks and obtain notebook attribution separately. [IPython callbacks](https://ipython.readthedocs.io/en/stable/config/callbacks.html)
+
+   | IOPub message | What Trail can get |
+   |---|---|
+   | `execute_input` | Submitted code and execution number |
+   | `status` | `busy` and `idle` signals that bracket request processing |
+   | `stream` | Text written to stdout or stderr |
+   | `execute_result` | The cell’s expression result, when emitted |
+   | `display_data` | Explicit displays such as plots, images, and HTML |
+   | `error` | Exception type, message, and traceback |
+
+   Group these messages by `parent_header.msg_id`, the originating execution request ID. The `idle` signal marks completion of request processing. The requesting frontend gets the explicit success or failure status in `execute_reply` on the shell channel. [IOPub protocol](https://jupyter-client.readthedocs.io/en/stable/messaging.html#messages-on-the-iopub-pub-sub-channel)
+
+   For notebook and cell attribution, a frontend observer can supplement IOPub: it knows the notebook and can observe the reply to its own execution request. A separate Trail connection must not expect to receive other clients' shell replies. The event examples below distinguish a completed live execution from an input recovered through history. [Shell request/reply routing](https://jupyter-client.readthedocs.io/en/stable/messaging.html#introduction)
+
+3. **Optional follow-up: recover missed executions from history.** Send a `history_request` with `hist_access_type='range'`, `session=0`, and `raw=True` for the current run. Each returned execution number and source can become a recovered execution event. Match it to any previously observed live execution by server, the kernel's message-header `session` UUID, and execution number; the UUID changes on kernel restart. For live messages, `parent_header.msg_id` links outputs and status messages to their originating request. A frontend observer must separately associate that request with its notebook and cell. Historical entries do not retain request IDs. [History protocol](https://jupyter-client.readthedocs.io/en/stable/messaging.html#history), [message identity and parent headers](https://jupyter-client.readthedocs.io/en/stable/messaging.html#parent-header)
 
    This creates events describing code execution; it does not establish that a particular execution caused an existing filesystem or JupyterGIS event. Matching times provides correlation. Causal attribution requires additional instrumentation that records the operation and its originating execution. If notebook origin is unknown, leave the recovered event's `entry` unset. If an execution is already logged, do not import it as another execution.
 
 > We retrieve code through the kernel protocol, how do we attribute to actual events?
 
 > **Codex:** Each history entry can become a recovered execution event. We can join it to a recorded live execution using the kernel identity and execution number, and then use the live request's notebook/cell association. History alone cannot identify which existing file or GIS events it caused. I added these distinctions and the rule to leave unknown notebook attribution unset.
-
-3. **Add live execution events for richer provenance.** Capture notebook identity, cell identity, start/end times, and success or error. A Python kernel extension can use `pre_run_cell` and `post_run_cell`; the latter supplies the execution count and errors. A cell ID is available when supplied by the frontend. The collector must add timestamps at the callbacks and obtain notebook attribution separately. [IPython callbacks](https://ipython.readthedocs.io/en/stable/config/callbacks.html)
-
-   A frontend observer is another option: it knows the notebook and can observe the reply to its own execution request. A separate Trail connection must not expect to receive other clients' shell replies. The event examples below distinguish a completed live execution from an input recovered through history. [Shell request/reply routing](https://jupyter-client.readthedocs.io/en/stable/messaging.html#introduction)
 
 > Okay, give some example Event instances that we'd log based on the information we get
 

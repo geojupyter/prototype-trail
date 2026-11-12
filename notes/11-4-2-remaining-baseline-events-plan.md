@@ -387,14 +387,22 @@ With the updated preset, either the watchdog or the consumer should discover the
 The detailed proposal uses the recommendations below. The alternatives remain open for review.
 
 1. Mark a created map with a flag on `opened`, as recommended, or with a separate `created` verb.
+- created verb, a separate flag would just bloat the schema
 2. Let the code that creates a map record its path through a service in `@jupytergis/schema`, as recommended, or let the emitter watch the page's contents manager for new files. The second needs no change to the command, but it also flags duplicates and misses the notebook renderer.
+- record through a service
 3. Order mode messages with the page's focus counter, as recommended, or wait for the upstream plan's per-document sequence numbers.
+- focus counter
 4. Report mode changes without a cause at first, as recommended, or make every place that sets the mode name its cause now.
 5. Remove URL query strings entirely, as recommended, or keep parameters known to be harmless.
+- For now, remove strip the query, but put in place the mechanism so we can define for URLs what the safe parameters are
 6. Send `source/updated` only when a source's reference changes, as recommended, or also report edits inside inline data, such as drawn features.
+- when reference changes
 7. Leave GeoJSON embedded from Python unlinked for now, as recommended, or ask upstream to keep its original path as metadata.
+- leave unlinked
 8. Record nothing when `trail init` replaces an existing project's rules, as recommended, or record the replacement.
+- record nothing
 9. Interpret filters in Trail, as recommended, or have JupyterGIS's emitter describe them.
+- Yes, just interpret them based on the messages
 
 ### What this plan would still leave out ([TLDR](#what-this-plan-would-still-leave-out-deep-dive))
 
@@ -407,3 +415,999 @@ These are limits of the proposed result.
 - Filter descriptions follow the current symbology format. A later format change needs a matching change in Trail.
 - Automatic mode resets appear as tool changes.
 - Story-segment overrides of symbology are not described.
+
+## Skeleton Code
+
+This section sketches the Python code that the plan would add or change. It covers Trail and the Python tests in eventfeed. It names each module, class and method, and shows how a message passes from one piece to the next. The TypeScript and YAML changes appear only as the messages they would send to Python.
+
+**Status.** Everything below is **Proposed** unless it is labeled **Existing**. Existing names and paths were checked on 2026-11-11 against Trail's `triage` working tree and eventfeed's `focus` working tree. Method bodies are `...`, except where a few lines show how one piece calls the next. A code block for an existing class shows only the members that the plan adds or changes.
+
+**Decisions applied.** The skeleton follows the answers under [Decisions still open for review](#decisions-still-open-for-review-tldr). Decision 1 chose a `created` verb over a flag. The skeleton assumes that JupyterGIS sends `created` in place of `opened` for the first view of a map it just made, so one action still produces one message. Sending `created` and `opened` together would bring back the arrival-order problem described under the alternatives. Decision 5, the list of safe URL query parameters, belongs to the browser code and has no Python counterpart.
+
+### How the Python pieces connect
+
+**Existing path.** A JupyterGIS message reaches the project log through the calls below. The proposed hooks are labeled with their step.
+
+```text
+JupyterGIS emitter (TypeScript)        posts each message to Jupyter Server's /api/events
+Jupyter Server                         validates it against the YAML schemas registered by
+                                       eventfeed's register_event_schemas, then forwards it
+Consumer.receive(server, text)         trail/jupyter/consumer.py
+└─ Consumer.route(server, record)
+   ├─ Consumer.resolve(server, data)   finds the map's asset, which becomes the record's entry
+   ├─ JupyterEvent.registry            picks the record class for the message's schema
+   ├─ Consumer.link(server, event)     proposed, step 4: links the data file a layer reads
+   └─ event.apply(trail)               appends to trail.events, which writes events.jsonl
+Feed.write(events)                     trail/cli/feed.py
+└─ Renderer.render(event, position)    one console row per item of event._repr_items()
+Jupyter.focus(server=, frontend_id=)   trail/jupyter/jupyter.py: one page's focus records in
+                                       page order; proposed, step 6: mode records as well
+```
+
+The initialization record of step 1 does not pass through this path. `Trail.__init__` creates it directly when it opens a new project.
+
+**Record classes.** Each log record is an instance of an `Event` subclass. `Event.classes` registers each class by name so that the log can be replayed. `JupyterEvent.registry` maps each JupyterGIS schema to its class.
+
+```text
+Event                                         trail/event.py
+├── AddAssetEvent, RemoveAssetEvent, AddDirEvent, RemoveDirEvent, WatchdogEvent
+├── InitTrailEvent                            proposed, step 1
+└── JupyterEvent                              trail/jupyter/event.py
+    ├── PageEvent                             proposed, step 6
+    │   ├── DocumentEvent ── DocumentV1Event  moves under PageEvent in step 6
+    │   └── ModeEvent ── ModeV1Event          proposed, step 6
+    ├── LayerEvent ── LayerV1Event            extended in steps 2 to 4
+    ├── SourceEvent ── SourceV1Event          proposed, step 4
+    ├── ViewportEvent ── ViewportV1Event
+    └── ContentsServiceV1Event
+```
+
+**Modules.**
+
+| Path | Status | Change | Step |
+|---|---|---|---|
+| `src/trail/event.py` | Existing | Add `InitTrailEvent`. | 1 |
+| `src/trail/trail.py` | Existing | `Trail.__init__` logs `InitTrailEvent` for a new project. | 1 |
+| `src/trail/cli/render.py` | Existing | `Renderer.verb` names the record `initialized`. | 1 |
+| `src/trail/cli/theme.py` | Existing | `VERB_STYLES` gains `initialized` and `changed`. | 1, 6 |
+| `src/trail/jupyter/symbology.py` | Proposed | Compares a layer's old and new symbology. | 2 |
+| `src/trail/jupyter/event.py` | Existing | Extend `JupyterEvent` and `LayerEvent`. Add `SourceEvent`, `PageEvent` and `ModeEvent`. | 2, 3, 4, 6 |
+| `src/trail/jupyter/source.py` | Proposed | `Source`, one data reference read from a message. | 4 |
+| `src/trail/jupyter/consumer.py` | Existing | `Consumer.link` attaches the data file to layer and source records. | 4 |
+| `src/trail/ontrail/geospatial.txt` | Existing | Add `*.jgis`, `*.qgz` and `*.qgs`. | 4 |
+| `src/trail/jupyter/jupyter.py` | Existing | `Jupyter.focus` includes mode records. | 6 |
+| `src/trail/jupyter/__init__.py` | Existing | Export the new record classes. | 4, 6 |
+| `tests/jupyter/conftest.py` | Existing | Message builders beside the existing `document(...)`. | 2 to 6 |
+| `tests/test_trail.py`, `tests/test_init.py`, `tests/test_ontrail.py`, `tests/jupyter/test_events.py`, `tests/jupyter/test_consumer.py` | Existing | Acceptance checks. | 1 to 7 |
+| `tests/jupyter/schemas/` | Existing | Copies of the new and changed YAML schemas. | 3 to 6 |
+| `tests/jupyter/fixtures/` | Existing | A captured grammar-panel update and the demonstration messages. | 2, 7 |
+| eventfeed `python/jupytergis_core/jupytergis_core/events.py` | Existing, unchanged | Registers every YAML file under `event_schemas/`, so new schemas need no Python change. | 3 to 6 |
+| eventfeed `python/jupytergis_core/jupytergis_core/tests/test_events.py` | Existing | Cases for the new and changed schemas. | 3 to 6 |
+
+Step 5 changes no Trail source. [Its section](#step-5-created-maps) explains why.
+
+**Non-Python changes.** These eventfeed changes produce the messages that the Python code reads. The Deep Dive sections above describe them.
+
+| Step | Change in eventfeed | What Python receives |
+|---|---|---|
+| 3 | The shared map document passes each layer change's Yjs locality to the emitter. `layer_v1.yaml` gains `local`. | A top-level `local` on layer messages. |
+| 4 | The emitter reads each layer's source from the shared map and caches its last reference. It removes credentials and query strings from URLs, keeping only parameters on a safe list that starts empty. `layer_v1.yaml` gains `object.source`, and `source_v1.yaml` is new. | `object.source` on layer messages, and `source/v1` messages. |
+| 5 | The new-map command and the notebook renderer register a new map's path with a service in `@jupytergis/schema`. The emitter sends `created` for a registered path. `document_v1.yaml` gains the verb `created`. | `document/created` messages. |
+| 6 | The emitter reports each model's mode change once and numbers it with the page's focus counter. `mode_v1.yaml` is new. | `mode/changed` messages with `frontend_id` and `focus_seq`. |
+
+### Messages the Python code reads
+
+**Proposed payloads.** These are messages as Trail's consumer would receive them over the WebSocket. The field names follow the Deep Dive, and the values are illustrative. In the examples, the map `maps/city.jGIS` reads `data/crossings.geojson` through the relative path `../data/crossings.geojson`.
+
+A layer added from that file. `local` is step 3's locality, and `object.source` is step 4's reference:
+
+```json
+{
+  "schema_id": "https://schema.jupytergis.org/events/layer/v1",
+  "subject": "42",
+  "verb": "added",
+  "local": true,
+  "object": {
+    "document_path": "maps/city.jGIS",
+    "layer_id": "layer-1",
+    "new": {"type": "VectorLayer", "name": "crossings", "parameters": {"source": "source-1"}},
+    "source": {
+      "id": "source-1",
+      "type": "GeoJSONSource",
+      "path": "../data/crossings.geojson",
+      "resolved_path": "data/crossings.geojson"
+    }
+  }
+}
+```
+
+The source pointed at another file. The layer itself is unchanged, so only a `source/v1` message reports the change:
+
+```json
+{
+  "schema_id": "https://schema.jupytergis.org/events/source/v1",
+  "subject": "42",
+  "verb": "updated",
+  "local": true,
+  "object": {
+    "document_path": "maps/city.jGIS",
+    "source_id": "source-1",
+    "old": {"id": "source-1", "type": "GeoJSONSource",
+            "path": "../data/crossings.geojson", "resolved_path": "data/crossings.geojson"},
+    "new": {"id": "source-1", "type": "GeoJSONSource",
+            "path": "../data/crossings_2026.geojson", "resolved_path": "data/crossings_2026.geojson"}
+  }
+}
+```
+
+Other kinds of reference fill other keys. A URL source has `"urls": ["https://example.org/crossings.geojson"]` and no `resolved_path`. Embedded data has `"inline": {"field": "data", "size": 48213}` and no path.
+
+The user chose Identify:
+
+```json
+{
+  "schema_id": "https://schema.jupytergis.org/events/mode/v1",
+  "subject": "42",
+  "verb": "changed",
+  "frontend_id": "6f1c2a9e-3b4d-4c5e-8f70-1a2b3c4d5e6f",
+  "focus_seq": 4,
+  "object": {"document_path": "maps/city.jGIS", "mode": "identifying", "previous": "panning"}
+}
+```
+
+The first view of a newly created map sends the existing document message with the verb `created`:
+
+```json
+{
+  "schema_id": "https://schema.jupytergis.org/events/document/v1",
+  "subject": "42",
+  "verb": "created",
+  "object": {"document_path": "maps/city.jGIS"}
+}
+```
+
+**Existing message, shape to confirm.** Step 2 reads the `layer/updated` message that JupyterGIS already sends when the user presses OK in the symbology dialog. Its `old` and `new` hold the whole layer. Adding `mag > 5` to a grammar layer would change `parameters.symbologyState` as below. The rules are left empty here for brevity. Step 2 starts by capturing a real message to confirm this shape.
+
+```json
+{
+  "schema_id": "https://schema.jupytergis.org/events/layer/v1",
+  "subject": "42",
+  "verb": "updated",
+  "object": {
+    "document_path": "examples/earthquakes.jGIS",
+    "layer_id": "layer-2",
+    "old": {"name": "Earthquakes", "parameters": {"symbologyState": {"layers": [
+      {"id": "grammar-1", "rules": []}
+    ]}}},
+    "new": {"name": "Earthquakes", "parameters": {"symbologyState": {"layers": [
+      {"id": "grammar-1", "rules": [],
+       "when": [{"type": "fieldCompare", "field": "mag", "op": ">", "value": 5}]}
+    ]}}}
+  }
+}
+```
+
+### Step 1: the initialization record
+
+**`InitTrailEvent`.** This record marks where a project began. It would live in `src/trail/event.py` beside `AddAssetEvent`. `Trail.__init__` creates it, the log replay in `JSONL.read` rebuilds it, and the console's `Renderer` shows it. It has no entry: `Event.to_record` writes `"entry": null` for it, and replay rebuilds it without looking up an asset or a Dir.
+
+```python
+@dataclass(kw_only=True, slots=True, repr=False)
+class InitTrailEvent(Event):
+    trail_id: str
+    root: str
+    ontrail: list[str] = field(default_factory=list)
+    offtrail: list[str] = field(default_factory=list)
+
+    def apply(
+        self,
+        trail: Trail,
+        *,
+        replay: bool = False,
+    ) -> None:
+        if not replay:
+            trail.events.append(self)
+        return None
+```
+
+| Field | Content |
+|---|---|
+| `trail_id` | The Trail's `id`, which `project.json` also holds. It keeps the record meaningful if the log is copied elsewhere. |
+| `root` | The project directory, `trail.dir.parent`. The name does not end in `path`, so `Renderer.value` shows the directory in full and not as `.`. |
+| `ontrail`, `offtrail` | The rules of `.ontrail` and `.offtrail` when the project was created, without comments. |
+
+`apply` appends the record to `trail.events` unless the record is being replayed. It changes nothing else, so replay has nothing to redo.
+
+**`Trail.__init__`.** The **existing** code computes `created` before it replays the log. The proposed `_log_init` call goes after `json.dump()` and before `dirs.refresh()`, so the record precedes the first `watched` and `discovered` records:
+
+```python
+class Trail(Node):
+    def __init__(
+        self,
+        dir: PathLike | None = None,
+        ontrail: os.PathLike[str] | str | None = "default",
+    ):
+        super().__init__()
+        if dir is None:
+            ...
+        else:
+            ...
+            self.dir = dir
+            created = not self.json.path.exists()
+            if created and ontrail is not None:
+                self.ontrail.txt.create(ontrail)
+            # unlike .ontrail, a missing .offtrail is written on every open
+            self.offtrail.default()
+            self.json.load()
+            self.events.jsonl.read()
+            self.json.dump()
+            if created:
+                self._log_init()
+            # the replay rebuilt the Dirs that were live, and .ontrail may have changed since
+            self.dirs.refresh()
+            self.assets.scan()
+            self.watchdog.session.reconcile()
+
+    def _log_init(self) -> None:
+        ontrail = [
+            str(rule)
+            for rule in self.ontrail
+        ]
+        offtrail = [
+            str(rule)
+            for rule in self.offtrail
+        ]
+        event = InitTrailEvent(
+            trail_id=self.id,
+            root=str(self.dir.parent),
+            ontrail=ontrail,
+            offtrail=offtrail,
+        )
+        event.apply(self)
+```
+
+`str(rule)` turns each `Rule`, a `str` subclass from `src/trail/rule.py`, into a plain string. The live record then equals the replayed one.
+
+- A reopened project has `project.json`, so `created` is false and no second record is written. Running `trail init` on an existing project opens it the same way, which matches decision 8.
+- `Trail()` without a directory takes the other branch of `__init__` and persists nothing.
+- `Trail.clear` empties the whole log, this record included, and then logs the Dirs again. Whether it should also log the initialization record again is left open.
+- Triage offers every record with `is_accepted=false` for review ([triage.py:259](/home/arstneio/PyCharmProjects/trail/src/trail/cli/triage.py#L259)), so it would offer this record too. Creating the record with `is_accepted=True` would keep it out of triage. The skeleton keeps the default.
+
+**`Renderer.verb`.** Without a new branch, the fallback would name the record `inittrail`: its class name without `Event`, lowercased. The proposed branch names it `initialized`, and a new `VERB_STYLES` entry in `src/trail/cli/theme.py` gives that verb a colour:
+
+```python
+class Renderer(Node):
+    @staticmethod
+    def verb(event: Event) -> str:
+        if isinstance(event, InitTrailEvent):
+            return "initialized"
+        if isinstance(event, AddAssetEvent):
+            ...
+```
+
+```python
+VERB_STYLES: Final[dict[str, str]] = {
+    # existing entries
+    "initialized": "class:event.watched",
+}
+```
+
+### Step 2: filter descriptions
+
+**Symbology terms.** A layer's `parameters.symbologyState` holds a list of grammar layers under `layers`. Each grammar layer has an `id`, a list of `rules`, and optional `when` predicates combined by `whenOp`. Each rule has its own `id`, `when` and `whenOp`. A predicate is one condition in a `when` list, such as `{"type": "fieldCompare", "field": "mag", "op": ">", "value": 5}`. `whenOp` is `all` or `any`, and it defaults to `all`.
+
+**`symbology.py`.** This proposed module in `trail.jupyter` compares the old and new symbology of one `layer/updated` message. `LayerEvent.symbology` calls it, and `LayerEvent._repr_items` turns its result into console rows. The result is derived from the payload that Trail already stores, so the log stores nothing new.
+
+```python
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from functools import cached_property
+from typing import Any, Literal
+```
+
+```python
+# a grammar layer's id, and a rule's id or None for the grammar layer's own predicates
+Scope = tuple[str, str | None]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Conditions:
+    when: tuple[str, ...] = ()
+    when_op: str = 'all'
+
+    @classmethod
+    def of(cls, item: dict[str, Any]) -> Conditions:
+        when = tuple(
+            json.dumps(predicate, sort_keys=True)
+            for predicate in item.get('when', [])
+        )
+        out = cls(
+            when=when,
+            when_op=item.get('whenOp', 'all'),
+        )
+        return out
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PredicateChange:
+    verb: Literal['added', 'removed']
+    scope: Scope
+    predicate: dict[str, Any]
+
+    @property
+    def is_geometry(self) -> bool:
+        ...
+
+    @property
+    def label(self) -> str:
+        ...
+
+    @property
+    def text(self) -> str:
+        ...
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class CombinatorChange:
+    scope: Scope
+    old: str
+    new: str
+
+    @property
+    def label(self) -> str:
+        ...
+
+    @property
+    def text(self) -> str:
+        ...
+
+
+class SymbologyDiff:
+    def __init__(
+            self,
+            old: dict[str, Any] | None,
+            new: dict[str, Any] | None,
+    ) -> None:
+        self.old = old
+        self.new = new
+
+    @staticmethod
+    def conditions(state: dict[str, Any] | None) -> dict[Scope, Conditions]:
+        out = {}
+        if state is None:
+            return out
+        for grammar in state.get('layers', []):
+            out[grammar['id'], None] = Conditions.of(grammar)
+            for rule in grammar.get('rules', []):
+                out[grammar['id'], rule['id']] = Conditions.of(rule)
+        return out
+
+    @cached_property
+    def predicates(self) -> tuple[PredicateChange, ...]:
+        ...
+
+    @cached_property
+    def combinators(self) -> tuple[CombinatorChange, ...]:
+        ...
+
+    @cached_property
+    def has_other_changes(self) -> bool:
+        ...
+
+    @property
+    def has_filter_change(self) -> bool:
+        has_change = bool(self.predicates or self.combinators)
+        return has_change
+```
+
+`Conditions` holds each predicate as sorted JSON, so two predicates with the same content compare equal. `PredicateChange` keeps the predicate as a dictionary for display.
+
+| Member | Role |
+|---|---|
+| `SymbologyDiff.conditions(state)` | Maps each grammar layer and each rule to its `Conditions`, keyed by `Scope`. The IDs are stable, so the same key in `old` and `new` names the same grammar layer or rule. |
+| `predicates` | Predicates in `new` but not `old` become `added`, and the reverse become `removed`. A changed predicate appears as one of each. A grammar layer or rule present on one side only compares against empty `Conditions`. |
+| `combinators` | One change for each scope whose `whenOp` differs. |
+| `has_other_changes` | Whether the two states still differ once every `when` and `whenOp` is removed, as with a colour change. |
+| `has_filter_change` | Whether any predicate or combinator changed. |
+
+`label` and `text` become one console row each, as `label: text`. A predicate on a grammar layer filters the whole grammar layer, and a predicate on a rule is a condition of that rule:
+
+| Change | `label` | `text` |
+|---|---|---|
+| `fieldCompare` on a grammar layer | `filter added` or `filter removed` | `mag > 5` |
+| `between` on a grammar layer | `filter added` or `filter removed` | `3 <= mag <= 9` |
+| `fieldEquals` or `hasField` on a grammar layer | `filter added` or `filter removed` | `type = volcano` or `has mag` |
+| `geometryType` on a grammar layer | `geometry condition added` or `geometry condition removed` | `Polygon` |
+| Any predicate on a rule | `rule condition added` or `rule condition removed` | As above |
+| `whenOp` | `combinator changed` | `all -> any` |
+
+**`LayerEvent` additions.** The **existing** `LayerEvent` in `src/trail/jupyter/event.py` reads the layer's ID and name from the payload. Step 2 adds the symbology comparison and its rows:
+
+```python
+from trail.jupyter.symbology import SymbologyDiff
+```
+
+```python
+@dataclass(kw_only=True, slots=True, repr=False)
+class LayerEvent(JupyterEvent):
+    selectable: ClassVar[tuple[str, ...]] = (
+        'verb', 'layer_id', 'layer', 'has_filter_change',
+    )
+
+    @property
+    def symbology(self) -> SymbologyDiff | None:
+        if self.verb != 'updated':
+            return None
+        obj = self.data.get('object', {})
+        old = (
+            obj
+            .get('old', {})
+            .get('parameters', {})
+            .get('symbologyState')
+        )
+        new = (
+            obj
+            .get('new', {})
+            .get('parameters', {})
+            .get('symbologyState')
+        )
+        out = SymbologyDiff(old, new)
+        return out
+
+    @property
+    def has_filter_change(self) -> bool:
+        diff = self.symbology
+        has_change = (
+            diff is not None
+            and diff.has_filter_change
+        )
+        return has_change
+
+    def _repr_items(self) -> Iterator[tuple[str, object]]:
+        yield from JupyterEvent._repr_items(self)
+        if self.layer_id is not None:
+            yield 'layer_id', self.layer_id
+        if self.layer is not None:
+            yield 'layer', self.layer
+        diff = self.symbology
+        if diff is not None:
+            for change in (*diff.predicates, *diff.combinators):
+                yield change.label, change.text
+            if diff.has_other_changes:
+                yield 'symbology', 'other changes'
+```
+
+**Expected results.** Adding `mag > 5` would print the rows below the layer's name. A colour-only change would print `symbology: other changes` and no filter row. Pressing OK without a change would print neither.
+
+```text
+    verb: updated
+    layer_id: layer-2
+    layer: Earthquakes
+    filter added: mag > 5
+```
+
+- `LayerEvent` is a slots dataclass, which has no `__dict__` for a `cached_property`. `symbology` therefore builds a new comparison on each access, and `_repr_items` reads it once.
+- `Select.equals` in `src/trail/select.py` compares a field's value with `==`. A tuple of changes could not be selected by one of its items, so `has_filter_change` is the selectable part, as in `feed has_filter_change=true`. Selecting one predicate would need a membership test in `Select.equals`, which this plan leaves out.
+
+### Step 3: change locality
+
+**`JupyterEvent.is_local`.** The **existing** base class of the JupyterGIS records gains one property and one display row. `None` means that the message carries no locality, because it comes from an older emitter or from a message type without it. It does not mean `False`.
+
+```python
+@dataclass(kw_only=True, slots=True, repr=False)
+class JupyterEvent(Event):
+    @property
+    def is_local(self) -> bool | None:
+        out = self.data.get('local')
+        return out
+
+    def _repr_items(self) -> Iterator[tuple[str, object]]:
+        yield from Event._repr_items(self)
+        if self.verb:
+            yield 'verb', self.verb
+        if self.is_local is not None:
+            yield 'local', self.is_local
+```
+
+The property sits on the base class so that step 4's source records share it. `LayerEvent.selectable` gains `is_local` in this step, and step 4's `SourceEvent.selectable` includes it. In this plan, Trail only shows and selects the value. Using it to drop the copies that other views report stays with the deferred duplicate handling, noted in `LayerEvent` as `trail-todo: origin`.
+
+### Step 4: data references
+
+#### `Source`
+
+`Source` is one data reference as the emitter reports it: `object.source` in a layer message, or `object.old` and `object.new` in a source message. It would live in the proposed module `src/trail/jupyter/source.py`. `LayerEvent.source`, `SourceEvent.old` and `SourceEvent.new` build it from the stored payload when asked. `Consumer.link` reads it to find the local file, and `_repr_items` reads it for display. The log does not store it separately.
+
+```python
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+from trail import fmt
+```
+
+```python
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Inline:
+    field: str
+    size: int
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Source:
+    id: str
+    type: str
+    path: str | None = None
+    resolved_path: str | None = None
+    tables: tuple[str, ...] = ()
+    urls: tuple[str, ...] = ()
+    inline: Inline | None = None
+
+    @classmethod
+    def from_payload(cls, value: Any) -> Source | None:
+        ...
+
+    def __str__(self) -> str:
+        ...
+```
+
+- The fields mirror the `object.source` table in [Source references in layer messages](#source-references-in-layer-messages).
+- `from_payload` returns `None` when the value is not a dictionary with a string `id` and `type`. It converts lists to tuples. It never raises. Otherwise `Consumer.receive` would mark the whole message as an invalid payload, and a malformed reference would cost Trail the layer record.
+- `__str__` gives the type, then the reference as written: the path, the path with its GeoPackage tables, the URLs, or `inline` with the field and a size from `fmt.st_size`.
+
+#### `LayerEvent` references
+
+`LayerEvent` gains the reference and two stored fields. `Consumer.link` sets the fields before the record is applied. `Event.to_record` writes them to the log, and `Event.from_record` restores them. They are not derived again on replay because the server that resolved the path may no longer be known.
+
+```python
+from trail.jupyter.source import Source
+```
+
+```python
+@dataclass(kw_only=True, slots=True, repr=False)
+class LayerEvent(JupyterEvent):
+    selectable: ClassVar[tuple[str, ...]] = (
+        'verb', 'layer_id', 'layer', 'has_filter_change', 'is_local',
+    )
+
+    resource_id: str | None = field(default=None, repr=False)
+    resource_path: str = field(default='', repr=False)
+
+    @property
+    def source(self) -> Source | None:
+        value = (
+            self.data
+            .get('object', {})
+            .get('source')
+        )
+        out = Source.from_payload(value)
+        return out
+
+    def _repr_items(self) -> Iterator[tuple[str, object]]:
+        ...
+        source = self.source
+        if source is not None:
+            yield 'source', str(source)
+        if self.resource_path:
+            yield 'resource_path', self.resource_path
+            if self.resource_id is None:
+                yield 'resource', 'untracked'
+            else:
+                yield 'resource_id', self.resource_id
+```
+
+`repr=False` keeps the two fields out of the fields that `Event._repr_items` lists first, so `_repr_items` can show them after `source`. Every dataclass field stays selectable, so `feed resource_id=<id>` finds the layers that read a tracked file. `Renderer.value` shows any field whose name ends in `path` relative to the project root. The rows then cover the display table in [Linking layers to assets in Trail](#linking-layers-to-assets-in-trail):
+
+| Reference | Rows shown |
+|---|---|
+| Tracked file | `source`, `resource_path` relative to the root, `resource_id` |
+| Untracked file inside the project | `source`, `resource_path` relative to the root, `resource: untracked` |
+| File outside the project or the server root | `source`, with the path as written |
+| URL | `source`, with the URLs as reported |
+| Inline data | `source`, with `inline` and its size |
+
+Step 4 also removes the comment `trail-todo: resources` from `LayerEvent._repr_items`.
+
+#### `SourceEvent`
+
+`SourceEvent` records a `source/v1` message: a source added, removed, or pointed at another reference. It would live in `src/trail/jupyter/event.py` beside `LayerEvent`. `SourceV1Event` registers the schema, so the **existing** `Consumer.route` stores these messages without further change. The map stays the record's entry, as for a layer record.
+
+```python
+@dataclass(kw_only=True, slots=True, repr=False)
+class SourceEvent(JupyterEvent):
+    selectable: ClassVar[tuple[str, ...]] = ('verb', 'source_id', 'is_local')
+
+    resource_id: str | None = field(default=None, repr=False)
+    resource_path: str = field(default='', repr=False)
+    previous_resource_id: str | None = field(default=None, repr=False)
+    previous_resource_path: str = field(default='', repr=False)
+
+    @property
+    def source_id(self) -> str | None:
+        ...
+
+    @property
+    def old(self) -> Source | None:
+        ...
+
+    @property
+    def new(self) -> Source | None:
+        ...
+
+    @property
+    def current(self) -> Source | None:
+        ...
+
+    @property
+    def previous(self) -> Source | None:
+        ...
+
+    def _repr_items(self) -> Iterator[tuple[str, object]]:
+        ...
+
+
+@dataclass(kw_only=True, slots=True, repr=False)
+class SourceV1Event(SourceEvent):
+    schema: ClassVar[str] = 'https://schema.jupytergis.org/events/source/v1'
+```
+
+| Member | Role |
+|---|---|
+| `source_id` | `object.source_id`. |
+| `old`, `new` | `object.old` and `object.new` as `Source`. |
+| `current` | `new`, or `old` for `removed`. This mirrors `LayerEvent.layer`, which reads `old` for a removal. |
+| `previous` | `old` for `updated`, otherwise `None`. |
+| `resource_id`, `resource_path` | The file that `current` names. `feed resource_id=<id>` therefore finds additions, removals, and updates that switched to the file. |
+| `previous_resource_id`, `previous_resource_path` | The file that an update switched away from. |
+| `_repr_items` | `source_id`, then `old` and `new` through `Source.__str__`, then the resource rows as for a layer. |
+
+`is_shared` keeps its default, `True`, because a source belongs to the shared map that every view synchronizes.
+
+#### `Consumer.link`
+
+`Consumer` is the **existing** class in `src/trail/jupyter/consumer.py` that turns server messages into log records. Step 4 adds a call in `route`, between choosing the entry and applying the record. It also adds three methods and a small result class, `Resource`, beside the existing `Map`:
+
+```python
+from trail.jupyter.event import ContentsServiceV1Event, JupyterEvent, LayerEvent, SourceEvent
+from trail.jupyter.source import Source
+```
+
+```python
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Resource:
+    path: str = ''
+    asset_id: str | None = None
+
+
+class Consumer(Node):
+    def route(
+            self,
+            server: Server,
+            record: Message,
+    ) -> None:
+        ...
+        event.entry = found.asset
+        self.link(server, event)
+        event.apply(self._trail)
+        ...
+
+    def link(
+            self,
+            server: Server,
+            event: JupyterEvent,
+    ) -> None:
+        if isinstance(event, LayerEvent):
+            found = self.resource(server, event.source)
+            event.resource_path = found.path
+            event.resource_id = found.asset_id
+        elif isinstance(event, SourceEvent):
+            found = self.resource(server, event.current)
+            event.resource_path = found.path
+            event.resource_id = found.asset_id
+            found = self.resource(server, event.previous)
+            event.previous_resource_path = found.path
+            event.previous_resource_id = found.asset_id
+
+    def resource(
+            self,
+            server: Server,
+            source: Source | None,
+    ) -> Resource:
+        path = self.locate_source(server, source)
+        if path is None:
+            out = Resource()
+            return out
+        asset = self._trail.assets.get(path)
+        if asset is not None:
+            out = Resource(
+                path=str(path),
+                asset_id=asset.id,
+            )
+        elif self._parent._parent.is_inside(path.parent):
+            out = Resource(path=str(path))
+        else:
+            out = Resource()
+        return out
+
+    def locate_source(
+            self,
+            server: Server,
+            source: Source | None,
+    ) -> Path | None:
+        if (
+            source is None
+            or not source.resolved_path
+        ):
+            return None
+        path = server.locate(source.resolved_path)
+        if (
+            path is not None
+            and not path.exists()
+        ):
+            renamed = server.renamed(source.resolved_path)
+            path = server.locate(renamed)
+        return path
+```
+
+- `locate_source` follows the same steps as the **existing** `Consumer.resolve` does for the map. `Server.locate` joins a server-relative path to the server's root and returns `None` for a path containing `..`, an absolute path or a drive. `Server.renamed` follows the renames that `Consumer.observe` collects from Jupyter Server's `rename` messages.
+- `resolved_path` is absent for URLs and inline data, and in messages from an older emitter. Such records are stored without a link.
+- `resource` keeps a path only for a tracked file or a file inside the project, as `Jupyter.is_inside` decides. A file elsewhere shows only the path as written in `source`.
+- Unlike `resolve`, `resource` does not scan an untracked file into the project. The plan shows such a file as untracked.
+- A GeoPackage source links its `.gpkg` file, and `str(source)` lists its tables.
+
+#### Geospatial preset
+
+`src/trail/ontrail/geospatial.txt` gains three lines after `./`. The existing `ontrail.extensions()` reads the `*.ext` rules of every preset, so `.ontrail` completion in the console offers the new extensions without a code change.
+
+```text
+./
+*.jgis
+*.qgz
+*.qgs
+*.feather
+...
+```
+
+`src/trail/jupyter/__init__.py` exports `SourceEvent` and `SourceV1Event` beside the existing record classes.
+
+### Step 5: created maps
+
+**No Trail source change.** Decision 1 sends `created` as an ordinary verb of the existing document schema, and the existing code already handles it:
+
+- `Renderer.verb` shows a `JupyterEvent` by its `verb`, and `VERB_STYLES` already styles `created`.
+- `DocumentEvent.is_focus` counts only `activated` and `deactivated`, so a `created` record stays out of `Jupyter.focus`, as `opened` does.
+- `Consumer.resolve` treats `created` like any document message. With step 4's preset, it scans the new map file if the watchdog has not discovered it yet.
+- `feed verb=created` selects these records.
+
+The Python work is a copy of the updated `document_v1.yaml` in `tests/jupyter/schemas/` and the tests in [step 7](#step-7-tests-and-fixtures).
+
+### Step 6: tool changes
+
+#### `PageEvent`
+
+`PageEvent` is a proposed base class in `src/trail/jupyter/event.py` for records that one browser page numbers with its focus counter. `frontend_id` and `focus_seq` move to it from the **existing** `DocumentEvent`, and `DocumentEvent` becomes its subclass. `Jupyter.focus` sorts any `PageEvent` by these two values.
+
+```python
+@dataclass(kw_only=True, slots=True, repr=False)
+class PageEvent(JupyterEvent):
+    @property
+    def frontend_id(self) -> str | None:
+        out = self.data.get('frontend_id')
+        return out
+
+    @property
+    def focus_seq(self) -> int | None:
+        out = self.data.get('focus_seq')
+        return out
+
+
+@dataclass(kw_only=True, slots=True, repr=False)
+class DocumentEvent(PageEvent):
+    ...
+```
+
+`PageEvent` has no fields and no `schema`, so it neither changes the stored records nor registers a schema.
+
+#### `ModeEvent`
+
+`ModeEvent` records a `mode/changed` message, one change of the map tool. `ModeV1Event` registers its schema, and `Jupyter.focus` places it in page order beside the focus records.
+
+```python
+@dataclass(kw_only=True, slots=True, repr=False)
+class ModeEvent(PageEvent):
+    is_shared: ClassVar[bool] = False
+    selectable: ClassVar[tuple[str, ...]] = (
+        'verb', 'mode', 'previous', 'frontend_id', 'focus_seq',
+    )
+    labels: ClassVar[dict[str, str]] = dict(
+        panning='none',
+        identifying='Identify',
+        marking='Add Marker',
+        drawing='Edit Features',
+    )
+
+    @property
+    def mode(self) -> str | None:
+        ...
+
+    @property
+    def previous(self) -> str | None:
+        ...
+
+    def _repr_items(self) -> Iterator[tuple[str, object]]:
+        yield from JupyterEvent._repr_items(self)
+        for name in ('mode', 'previous'):
+            value = getattr(self, name)
+            if value is not None:
+                yield name, self.labels.get(value, value)
+        for name in ('frontend_id', 'focus_seq'):
+            value = getattr(self, name)
+            if value is not None:
+                yield name, value
+
+
+@dataclass(kw_only=True, slots=True, repr=False)
+class ModeV1Event(ModeEvent):
+    schema: ClassVar[str] = 'https://schema.jupytergis.org/events/mode/v1'
+```
+
+- `mode` and `previous` return the stored values from `object.mode` and `object.previous`, so `feed mode=identifying` selects by them. `_repr_items` shows the toolbar labels, such as `mode: Identify` and `previous: none`.
+- `is_shared` is `False` because the mode belongs to one map model in one page and is never synchronized.
+- A new `VERB_STYLES` entry, `"changed": "class:event.modified"`, gives the verb a colour.
+- `src/trail/jupyter/__init__.py` exports `PageEvent`, `ModeEvent` and `ModeV1Event`.
+
+#### `Jupyter.focus`
+
+`Jupyter.focus` is the **existing** method in `src/trail/jupyter/jupyter.py` that returns one page's focus records sorted by `focus_seq`. Its filter gains mode records. Its sort key is unchanged: records without an integer `focus_seq` still sort last, by time.
+
+```python
+from trail.jupyter.event import DocumentEvent, ModeEvent, PageEvent
+```
+
+```python
+class Jupyter(Node):
+    def focus(
+            self,
+            *,
+            server: str,
+            frontend_id: str,
+    ) -> Events:
+        url = normalize_url(server)
+        events = [
+            event
+            for event in self._trail.events
+            if (
+                (
+                    isinstance(event, ModeEvent)
+                    or (
+                        isinstance(event, DocumentEvent)
+                        and event.is_focus
+                    )
+                )
+                and event.server == url
+                and event.frontend_id == frontend_id
+            )
+        ]
+
+        def order(event: PageEvent) -> tuple[bool, int, object]:
+            ...
+```
+
+### Step 7: tests and fixtures
+
+**Message builders.** `tests/jupyter/conftest.py` already has `document(...)`, which builds a document message as JSON text for `Consumer.receive`. Three builders of the same form would cover the new messages:
+
+```python
+def layer(
+        verb: str = 'added',
+        path: str | None = 'map.jGIS',
+        subject: str = '42',
+        **extra: object,
+) -> str:
+    ...
+
+
+def source(
+        verb: str = 'updated',
+        path: str | None = 'map.jGIS',
+        subject: str = '42',
+        **extra: object,
+) -> str:
+    ...
+
+
+def mode(
+        mode: str = 'identifying',
+        previous: str = 'panning',
+        path: str | None = 'map.jGIS',
+        **extra: object,
+) -> str:
+    ...
+```
+
+**Acceptance checks in Trail.** Each test below is new unless marked as existing.
+
+| File | Test | Checks | Step |
+|---|---|---|---|
+| `tests/test_trail.py` | `test_new_trail_logs_initialized_first` | The first record is `InitTrailEvent`, followed by the first `AddDirEvent` and `AddAssetEvent` records. | 1 |
+| | `test_reopen_keeps_one_initialized` | Reopening keeps exactly one `InitTrailEvent`, with the same id. | 1 |
+| | `test_nodir_trail_logs_nothing` | `Trail()` writes no log. | 1 |
+| `tests/test_init.py` | `test_reinit_adds_no_initialized` | Running `init` on an existing project adds no record. | 1 |
+| `tests/jupyter/test_events.py` | `test_filter_added_and_removed_are_described` | The captured grammar-panel update shows `filter added: mag > 5`, and its reverse shows `filter removed`. | 2 |
+| | `test_combinator_change_is_described` | Switching `all` to `any` shows `combinator changed: all -> any`. | 2 |
+| | `test_restyle_has_no_filter_description` | A colour-only change and an OK without changes show no filter row. | 2 |
+| | `test_local_is_shown_and_selectable` | `is_local` is `True`, `False` or `None`, and `feed is_local=false` selects. | 3 |
+| | `test_source_from_payload` | Path, URL, GeoPackage and inline references parse. A malformed one gives `None`. | 4 |
+| | `test_mode_labels_and_selection` | Rows show `Identify` and `none`. `feed mode=identifying` selects. | 6 |
+| | `test_schema_registry_and_roundtrip` (existing) | Its parameter list gains `source` and `mode`. | 4, 6 |
+| | `test_classes_are_registered_before_replay` (existing) | It also checks `InitTrailEvent`, `SourceV1Event` and `ModeV1Event`. | 1, 4, 6 |
+| | `test_baseline_history_replays` | The demonstration messages replay into the history of [What the finished history should show](#what-the-finished-history-should-show-tldr). | 7 |
+| `tests/jupyter/test_consumer.py` | `test_layers_link_a_tracked_resource` | Two layers that read one tracked file both link to it. A map under `maps/` resolves `../data/x.geojson`. | 4 |
+| | `test_source_update_links_old_and_new` | `resource_id` and `previous_resource_id` name the new and old files. | 4 |
+| | `test_unlinked_references_are_still_recorded` | URL, inline, outside-root and older messages are recorded without a link. | 4 |
+| | `test_created_map_is_recorded_as_created` | `document/created` is stored, shown as `created`, and absent from `Jupyter.focus`. | 5 |
+| | `test_mode_and_focus_share_page_order` | Mode and focus records arriving out of order sort by `focus_seq`, also after reopening. | 6 |
+| `tests/test_ontrail.py` | A test in the existing class style | The geospatial preset discovers `world.jGIS` and `city.qgz`. | 4 |
+
+**Fixtures and schema copies.**
+
+- A grammar-panel update captured in step 2 replaces the synthetic `filters` update on line 4 of `tests/jupyter/fixtures/focus.jsonl`.
+- `tests/jupyter/fixtures/baseline.jsonl` would hold the messages captured during the step 7 demonstration.
+- `tests/jupyter/schemas/` gains `source_v1.yaml` and `mode_v1.yaml` and updated copies of `document_v1.yaml` and `layer_v1.yaml`. The existing `test_schema_copies_match_installed_eventfeed` fails until the copies match the installed eventfeed.
+
+**Acceptance checks in eventfeed.** The existing `test_every_schema_file_has_a_case` requires one `EventSchemaCase` for each YAML file, so each new schema needs a case:
+
+```python
+SOURCE_SCHEMA_ID = f"{EVENTS_SCHEMA_NAMESPACE}/source/v1"
+MODE_SCHEMA_ID = f"{EVENTS_SCHEMA_NAMESPACE}/mode/v1"
+
+EVENT_SCHEMA_CASES: tuple[EventSchemaCase, ...] = (
+    ...,
+    EventSchemaCase(
+        id=SOURCE_SCHEMA_ID,
+        event={
+            "subject": "42",
+            "verb": "updated",
+            "local": True,
+            "object": {
+                "document_path": "maps/city.jGIS",
+                "source_id": "source-1",
+                "old": {"id": "source-1", "type": "GeoJSONSource", "path": "a.geojson"},
+                "new": {"id": "source-1", "type": "GeoJSONSource", "path": "b.geojson"},
+            },
+        },
+    ),
+    EventSchemaCase(
+        id=MODE_SCHEMA_ID,
+        event={
+            "subject": "42",
+            "verb": "changed",
+            "object": {
+                "document_path": "maps/city.jGIS",
+                "mode": "identifying",
+                "previous": "panning",
+            },
+        },
+    ),
+)
+
+
+def test_created_document_event_emits() -> None:
+    ...
+
+
+def test_layer_local_and_source_emit() -> None:
+    ...
+
+
+def test_invalid_mode_is_rejected() -> None:
+    ...
+
+
+def test_source_reference_rejects_unknown_fields() -> None:
+    ...
+```
+
+The last test would check that a reference carrying an excluded field, such as `httpHeaders`, fails validation.
