@@ -38,7 +38,7 @@ Run once, in a terminal in your Trail checkout. This clones JupyterGIS next to i
 **Linux and macOS**
 
 ```bash
-git clone -b hodczak-prototype https://github.com/geojupyter/prototype-jupytergis-eventfeed.git ../eventfeed
+git clone -b hodczak-prototype https://github.com/hodczak/prototype-jupytergis-eventfeed.git ../eventfeed
 micromamba create -y -n trail -c conda-forge pip "python=3.13.*" "nodejs=24" pnpm qgis
 micromamba activate trail
 pip install -e .
@@ -50,7 +50,7 @@ python scripts/dev-install.py
 **Windows (PowerShell)**
 
 ```powershell
-git clone -b hodczak-prototype https://github.com/geojupyter/prototype-jupytergis-eventfeed.git ../eventfeed
+git clone -b hodczak-prototype https://github.com/hodczak/prototype-jupytergis-eventfeed.git ../eventfeed
 micromamba create -y -n trail -c conda-forge pip "python=3.13.*" "nodejs=24" pnpm qgis
 micromamba activate trail
 pip install -e .
