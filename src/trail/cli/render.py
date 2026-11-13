@@ -15,6 +15,8 @@ from trail.event import (
     AddAssetEvent,
     AddDirEvent,
     Event,
+    InitTrailEvent,
+    MetadataEvent,
     RemoveAssetEvent,
     RemoveDirEvent,
     WatchdogEvent,
@@ -262,6 +264,8 @@ class Renderer(Node):
         - AddDirEvent is `watched`.
         - RemoveDirEvent is `unwatched`.
         - WatchdogEvent uses its `event_type`. This includes an access to a dirasset.
+        - MetadataEvent is `changed`.
+        - InitTrailEvent is `initialized`.
         - Any other event is named after its class.
         """
         if isinstance(event, AddAssetEvent):
@@ -280,6 +284,10 @@ class Renderer(Node):
         if isinstance(event, JupyterEvent):
             out = event.verb or 'event'
             return out
+        if isinstance(event, MetadataEvent):
+            return "changed"
+        if isinstance(event, InitTrailEvent):
+            return "initialized"
         out = (
             type(event).__name__
             .removesuffix("Event")

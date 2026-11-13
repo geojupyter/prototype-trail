@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -8,6 +10,7 @@ from trail.node import Node
 from trail.session import WatchdogSession
 
 if TYPE_CHECKING:
+    from trail.event import FileAccessEvent
     from trail.trail import Trail
 
 
@@ -31,6 +34,15 @@ class Watchdog(Node):
     # directories listed by __repr__ before the remainder is summarized
     repr_limit = 10
     session = WatchdogSession.descriptor()
+
+    @cached_property
+    def observers(self) -> list[Callable[[FileAccessEvent], bool]]:
+        """
+        Callables offered each file session before it is logged. One that returns True takes the
+        session and logs it itself, such as a run of Jupyter saves of the same file.
+        """
+        out = []
+        return out
 
     def __repr__(self) -> str:
         """

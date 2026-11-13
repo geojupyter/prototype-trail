@@ -1,7 +1,7 @@
 "$id": "https://schema.jupytergis.org/events/document/v1"
 version: "1"
 title: "JupyterGIS document event"
-description: "A JupyterGIS document was opened, closed, activated or deactivated in the GUI. Activation describes a standalone map selected in a visible, focused page."
+description: "A JupyterGIS document was created, opened, closed, activated or deactivated in the GUI. `created` replaces `opened` for the first view of a map that JupyterGIS just created. Activation describes a standalone map selected in a visible, focused page."
 type: "object"
 required:
   - "verb"
@@ -15,6 +15,8 @@ properties:
     title: "Verb"
     description: "Document lifecycle or focus action"
     enum:
+      # trail: created - sent in place of opened for the first view of a new map.
+      - "created"
       - "opened"
       - "closed"
       - "activated"

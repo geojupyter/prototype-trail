@@ -112,6 +112,9 @@ class TestDirectoryAccessEvent:
                 'is_synthetic': True,
                 'started': event.started.isoformat(),
                 'count': {'opened': 1, 'created': 0, 'modified': 72, 'moved': 0, 'deleted': 0},
+                'format': '',
+                'changes': [],
+                'more': 0,
                 'cls': 'DirectoryAccessEvent',
                 'entry': asset.id,
                 'entry_type': 'DirAsset',
@@ -482,7 +485,10 @@ class TestAccessesWatched:
                     access.entry
                     for access in self.accesses(trail, previous)
                 ]
-                assert entries == assets
+                # the zarr store's access waits for its metadata to be read, so the two can be
+                # logged in either order
+                assert sorted(entries, key=assets.index) == assets
+                assert len(entries) == 2
 
             asyncio.run(run())
 
@@ -505,7 +511,8 @@ class TestAccessesWatched:
             # its consumer has ended, but its observer still counts
             playground.zarr.write('arr/c/0/0')
             deadline = time.monotonic() + 5
-            while getattr(left.get(asset.id), 'seen', None) is None:
+            # the writer opens the store's metadata before it writes the chunk
+            while getattr(left.get(asset.id), 'count', {}).get('modified', 0) == 0:
                 assert time.monotonic() < deadline
                 time.sleep(0.01)
             previous = len(trail.events)
@@ -532,7 +539,8 @@ class TestAccessesWatched:
                 trail.watchdog.session.debounce = 0
                 trail.watchdog.session.idle_gap = 60
                 playground.zarr.write('arr/c/0/0')
-                await self.until(lambda: asset.access.seen is not None)
+                # the writer opens the store's metadata before it writes the chunk
+                await self.until(lambda: asset.access.count['modified'] > 0)
 
             # a script that never stops: asyncio.run cancels the consumer as it returns
             asyncio.run(run())
@@ -781,7 +789,9 @@ class TestConsole:
                     and console.application.is_running
                 )
                 store.write('arr/c/0/0')
-                await self.until(lambda: asset.access.seen is not None)
+                # the writer opens the store's metadata before it writes the chunk, and the
+                # tests stop without waiting for late events
+                await self.until(lambda: asset.access.count['modified'] > 0)
                 console.application.exit()
                 async with asyncio.timeout(5):
                     await running

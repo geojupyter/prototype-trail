@@ -24,7 +24,6 @@ INIT = "init"
 ONTRAIL = "ontrail"
 OFFTRAIL = "offtrail"
 TRIAGE = "triage"
-CHECK = "check"
 MAGIC = re.compile(r"[*?\[]")
 
 
@@ -170,8 +169,7 @@ def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Watch a project directory and record what happens to its resources.",
         epilog=(
             "'trail init [PATH]' walks through (re)initializing a project. "
-            "'trail triage [PATH]' reviews pending events. "
-            "'trail check [PATH]' checks events in one list."
+            "'trail triage [PATH]' reviews pending events."
         ),
     )
     parser.add_argument(
@@ -191,7 +189,6 @@ def parse(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def run_triage(
     root: Path,
     nodir: bool = False,
-    check: bool = False,
 ) -> int:
     lock = None
     holder = object()
@@ -210,10 +207,7 @@ def run_triage(
             trail = Trail(directory)
             trail.lock = lock
         console = Console(trail, root)
-        if check:
-            asyncio.run(console.run(check=True))
-        else:
-            asyncio.run(console.run(triage=True))
+        asyncio.run(console.run(triage=True))
     except KeyboardInterrupt:
         return 130
     finally:
@@ -240,8 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         and argv[0] == INIT
     )
     triaging = bool(argv) and argv[0] == TRIAGE
-    checking = bool(argv) and argv[0] == CHECK
-    if initializing or triaging or checking:
+    if initializing or triaging:
         argv = argv[1:]
     arguments = parse(argv)
     if (
@@ -263,9 +256,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not sys.stdin.isatty():
         print("trail: the console needs an interactive terminal", file=sys.stderr)
         return 2
-    if checking:
-        out = run_triage(root, arguments.nodir, check=True)
-        return out
     if triaging:
         out = run_triage(root, arguments.nodir)
         return out

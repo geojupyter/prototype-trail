@@ -168,6 +168,14 @@ class TestInit:
             # its anchored lines belong to this project, so nothing is reported as imported
             assert not trail.ontrail.warnings
 
+    @pytest.mark.init_record
+    def test_reinitializing_adds_no_initialized_record(self) -> None:
+        with self.workspace() as root:
+            first = Trail(root)
+            [initialized] = first.events.select('cls=InitTrailEvent')
+            trail = self.run(root, ENTER)
+            assert trail.events.select('cls=InitTrailEvent').ids == [initialized.id]
+
     def test_an_interrupt_writes_nothing(self) -> None:
         with self.workspace() as root:
             with pytest.raises(KeyboardInterrupt):

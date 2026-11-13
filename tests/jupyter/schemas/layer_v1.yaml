@@ -3,6 +3,51 @@ version: "1"
 title: "JupyterGIS layer event"
 description: "A JupyterGIS layer was created, deleted, or updated in the GUI."
 type: "object"
+definitions:
+  sourceReference:
+    title: "Source reference"
+    description: "Where a source's data comes from. Never holds credentials, query parameters outside a safe list, or inline data."
+    type: "object"
+    required:
+      - "id"
+      - "type"
+    additionalProperties: false
+    properties:
+      id:
+        description: "The source's ID."
+        type: "string"
+      type:
+        description: "The source's type, such as `GeoJSONSource`."
+        type: "string"
+      path:
+        description: "The path as written in the source. `null` when the path is a URL."
+        type: ["string", "null"]
+      resolved_path:
+        description: "The Contents path that JupyterGIS loads, relative to the server root. `null` for URLs."
+        type: ["string", "null"]
+      tables:
+        description: "A GeoPackage source's tables."
+        type: "array"
+        items:
+          type: "string"
+      urls:
+        description: "Each URL of the source, without user information, fragment or unsafe query parameters."
+        type: "array"
+        items:
+          type: "string"
+      inline:
+        description: "For embedded data, the field that holds it and its serialized size in bytes."
+        type: "object"
+        required:
+          - "field"
+          - "size"
+        additionalProperties: false
+        properties:
+          field:
+            type: "string"
+          size:
+            type: "integer"
+            minimum: 0
 required:
   - "verb"
   - "object"
@@ -11,6 +56,11 @@ properties:
     title: "Subject"
     description: "The performer of `verb`. Client ID of acting user, if available."
     type: "string"
+  # trail: origin - lets consumers tell the copy that made a change from replicas.
+  local:
+    title: "Local"
+    description: "True when the change originated in the document copy that reported it."
+    type: "boolean"
   verb:
     title: "Verb"
     description: "Layer action"
@@ -46,3 +96,7 @@ properties:
         type: "object"
         # TODO: The actual shape of a layer object! How to "import" that knowledge from packages/schemas?
         # properties:
+      # trail: resources - the layer's data reference, kept for removals of orphaned sources.
+      source:
+        description: "The reference of the layer's source. Present on added and removed, and on updated when the layer switched sources."
+        $ref: "#/definitions/sourceReference"

@@ -1,0 +1,55 @@
+"$id": "https://schema.jupytergis.org/events/mode/v1"
+version: "1"
+title: "JupyterGIS mode event"
+description: "The interaction mode of a JupyterGIS map changed, for example when the user selected Identify or pressed Escape. Automatic resets are reported the same way."
+type: "object"
+required:
+  - "verb"
+  - "object"
+properties:
+  subject:
+    title: "Subject"
+    description: "The performer of `verb`. Client ID of acting user, if available."
+    type: "string"
+  verb:
+    title: "Verb"
+    description: "Mode action"
+    enum:
+      - "changed"
+  time:
+    description: "UTC time when the browser observed the change."
+    type: "string"
+    format: "date-time"
+  # trail: mode - shares the page counter of document focus events.
+  frontend_id:
+    description: "Random UUID for one loaded browser page, not a person."
+    type: "string"
+    format: "uuid"
+    pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+  focus_seq:
+    description: "Increasing counter shared by focus transitions and mode changes in this page."
+    type: "integer"
+    minimum: 1
+  object:
+    title: "Object"
+    description: "The thing that `verb` was performed on."
+    type: "object"
+    required:
+      - "document_path"
+      - "mode"
+      - "previous"
+    properties:
+      document_path:
+        title: "Document path"
+        description: "The path of the `.jGIS` document, or `null` if ephemeral."
+        type: ["string", "null"]
+      mode:
+        description: "The mode after the change."
+        enum: &modes
+          - "panning"
+          - "identifying"
+          - "marking"
+          - "drawing"
+      previous:
+        description: "The mode before the change."
+        enum: *modes

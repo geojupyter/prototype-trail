@@ -124,6 +124,7 @@ class Scopes(Sequence[str]):
             for pattern in self.patterns
         )
 
+    # no: `decide` seems like a vague name? Can you think of something more apt?
     def decide(self, relative: str) -> str | None:
         """
         Returns the line that decides a relative path, or None if none matches. Case is

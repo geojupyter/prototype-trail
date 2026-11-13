@@ -22,6 +22,8 @@ from watchdog.events import (
     DirCreatedEvent,
     DirDeletedEvent,
     DirMovedEvent,
+    FileClosedEvent,
+    FileClosedNoWriteEvent,
     FileCreatedEvent,
     FileDeletedEvent,
     FileModifiedEvent,
@@ -32,8 +34,11 @@ from watchdog.events import (
 )
 from watchdog.observers import Observer
 
-from trail.asset import DirAsset
-from trail.event import OPS, DirectoryAccessEvent, WatchdogEvent
+from trail.asset import Asset, DirAsset
+from trail.event import OPS, DirectoryAccessEvent, FileAccessEvent, MetadataEvent, WatchdogEvent
+from trail.metadata import Metadata
+from trail.metadata.geospatial import sibling_shp
+from trail.metadata.reads import Reads
 from trail.node import Node
 from trail.offtrail import decide as offtrail_decision
 
@@ -42,7 +47,6 @@ if TYPE_CHECKING:
 
     from watchdog.observers.api import BaseObserver, ObservedWatch
 
-    from trail.asset import Asset
     from trail.watchdog import Watchdog
 
 # queued by stop() after everything else
@@ -58,10 +62,16 @@ EVENT_FILTER: Final = [
     FileDeletedEvent,
     FileMovedEvent,
     FileOpenedEvent,
+    # a close tells when the writer is done, and whether an open was a read or a write
+    FileClosedEvent,
+    FileClosedNoWriteEvent,
     DirCreatedEvent,
     DirDeletedEvent,
     DirMovedEvent,
 ]
+# the file events folded into a session. A move or a deletion stays one event
+FOLDED: Final = frozenset({'created', 'modified', 'opened', 'closed', 'closed_no_write'})
+CLOSES: Final = frozenset({'closed', 'closed_no_write'})
 
 
 def enclosing(
@@ -138,6 +148,85 @@ class Access:
         )
         event.entry = asset
         return event
+
+
+@dataclass(slots=True, eq=False)
+class Fold:
+    """
+    The open session of one file path: its events folded until the writer is done. Times are epoch
+    seconds of the events' arrival.
+
+    - `started` is the first event.
+    - `ended` is the last creation, write, write close or replacement. A read does not move it.
+    - `last` is the last event of any kind, which the deadline is measured from.
+    - `is_closed` says whether nothing is known to hold the file open. A file created or replaced
+      without an open, as by a rename from outside the watched folders, is closed. So is a file
+      whose last open was followed by a close.
+    """
+
+    path: str
+    started: float
+    ended: float
+    last: float
+    is_created: bool = False
+    is_written: bool = False
+    is_close_written: bool = False
+    is_closed: bool = False
+
+    def add(
+            self,
+            event_type: str,
+            at: float,
+    ) -> None:
+        """Fold one event in. `replaced` is a rename onto the path, which ends a write."""
+        self.last = at
+        if event_type == 'created':
+            self.is_created = True
+            # a creation holds nothing open. A writer's open follows it at once
+            self.is_closed = True
+        elif event_type == 'opened':
+            self.is_closed = False
+        elif event_type == 'modified':
+            self.is_written = True
+        elif event_type == 'closed':
+            self.is_close_written = True
+            self.is_closed = True
+        elif event_type == 'closed_no_write':
+            self.is_closed = True
+        elif event_type == 'replaced':
+            self.is_written = True
+            self.is_closed = True
+        if event_type not in ('opened', 'closed_no_write'):
+            self.ended = at
+
+    def deadline(
+            self,
+            settle: float,
+            quiet: float,
+    ) -> float:
+        """The epoch time the session ends if nothing else arrives."""
+        if self.is_closed:
+            out = self.last + settle
+        else:
+            out = self.last + quiet
+        return out
+
+    def event_type(self, is_changed: bool) -> str:
+        """
+        The folded event's type. `is_changed` says whether the size or mtime differs from the last
+        recorded ones, which decides a session whose only sign of writing is a write close.
+        """
+        if self.is_created:
+            return 'created'
+        if (
+            self.is_written
+            or (
+                self.is_close_written
+                and is_changed
+            )
+        ):
+            return 'modified'
+        return 'opened'
 
 
 class Accesses(UserDict[str, Access]):
@@ -370,6 +459,12 @@ class Handler(FileSystemEventHandler):
             # queued ahead of the event that ends it, however far behind the loop is
             session.accesses.close_within(source)
         at = time.time()
+        # Trail's own metadata read of a file is not an access
+        if (
+            event.event_type in ('opened', 'closed_no_write')
+            and session.reads.is_own(source, at, at)
+        ):
+            return
         if self.count(event, source, destination, at, seen):
             return
         arrival = Arrival(at=at, event=event)
@@ -415,7 +510,9 @@ class Handler(FileSystemEventHandler):
                 return True
             if not self.is_child(roots[source_root], source):
                 return False
-            accesses.count(roots[source_root][0], event.event_type, at, seen)
+            # an access closes after it goes quiet, so a dirasset has no use for closes
+            if event.event_type in OPS:
+                accesses.count(roots[source_root][0], event.event_type, at, seen)
             return True
         if event.is_directory:
             for root in dict.fromkeys((source_root, destination_root)):
@@ -574,6 +671,11 @@ class WatchdogSession(Session):
     # seconds stop() waits after the last event, since watchdog holds a move out of a watch for
     # half a second to pair it
     settle = 0.55
+    # seconds a file's session waits after a close, so an indexer's read folds into the write
+    fold_settle = 1.0
+    # seconds without an event after which a file's session ends without a close, as on platforms
+    # that report no closes, or while a writer holds the file open
+    fold_quiet = 10.0
     # whether a run has been prepared and not closed since
     is_started = False
 
@@ -597,6 +699,12 @@ class WatchdogSession(Session):
     # the root of each dirasset, with its id and its children, published by the loop
     roots: dict[str, tuple[str, re.Pattern[str]]]
     accesses: Accesses
+    # the open session of each file path, kept by the consumer on the loop
+    folds: dict[str, Fold]
+    # the last size and mtime recorded for each file asset, by id
+    stats: dict[str, tuple[int | None, float | None]]
+    # the metadata reads that follow a write
+    reads: Reads
     consumer: asyncio.Task[None] | None
     # a forked child inherits the run but none of its threads
     pid: int
@@ -633,6 +741,9 @@ class WatchdogSession(Session):
         self.ignore_rule = None
         self.roots = {}
         self.accesses = Accesses(self)
+        self.folds = {}
+        self.stats = {}
+        self.reads = Reads(self)
         self.consumer = None
         self.pid = os.getpid()
         self.hook = None
@@ -684,6 +795,7 @@ class WatchdogSession(Session):
             self.prepare(loop)
             self.open()
             self.place_watches()
+            self.load_baselines()
         except BaseException:
             self.close()
             self._trail.lock.release(self)
@@ -706,6 +818,27 @@ class WatchdogSession(Session):
             return
         if self._parent.desired():
             self.start()
+
+    def load_baselines(self) -> None:
+        """
+        Check each asset against the baseline the last run kept, after the watches are placed. An
+        asset with no reader only needs a stat, which opens nothing, so it is checked now. An
+        asset with a reader is read in the background, behind any asset that changes, if it has
+        no baseline or its stat changed.
+        """
+        readable = []
+        assets = list(self._trail.assets)
+        with (
+            self._trail.baselines.batch(),
+            self.reads.own(assets),
+        ):
+            for asset in assets:
+                metadata = asset.metadata
+                if type(metadata) is Metadata:
+                    metadata.observe('startup')
+                elif metadata.is_stale():
+                    readable.append(asset)
+        self.reads.load(readable)
 
     def place_watches(self) -> None:
         """Publish what the handler reads, then make the watches the ones `desired` names."""
@@ -798,6 +931,8 @@ class WatchdogSession(Session):
         self.put(STOP)
         try:
             await consumer
+            # the reads that the last write sessions asked for
+            await self.reads.drain()
         finally:
             self.close()
 
@@ -811,6 +946,7 @@ class WatchdogSession(Session):
             return
         if self.hook is not None:
             atexit.unregister(self.hook)
+        self.reads.close()
         self.halt()
         consumer = self.consumer
         if (
@@ -822,6 +958,7 @@ class WatchdogSession(Session):
                 consumer.cancel()
         try:
             self.record_open()
+            self._trail.baselines.save()
         finally:
             self.is_started = False
             self._trail.lock.release(self)
@@ -836,10 +973,16 @@ class WatchdogSession(Session):
         woken = self.woken
         try:
             while True:
-                timeout = None
+                timeouts = []
                 deadline = accesses.deadline()
                 if deadline is not None:
-                    timeout = max(0.0, deadline - time.monotonic())
+                    timeouts.append(deadline - time.monotonic())
+                deadline = self.fold_deadline()
+                if deadline is not None:
+                    timeouts.append(deadline - time.time())
+                timeout = None
+                if timeouts:
+                    timeout = max(0.0, min(timeouts))
                 with suppress(TimeoutError):
                     await asyncio.wait_for(woken.wait(), timeout)
                 woken.clear()
@@ -851,7 +994,13 @@ class WatchdogSession(Session):
                 ):
                     await asyncio.sleep(self.debounce)
                 accesses.close(before=time.monotonic() - self.idle_gap)
-                if self.consume():
+                # a failure in one burst is reported, and the next burst is still consumed
+                try:
+                    is_stopped = self.consume()
+                except Exception as error:  # noqa: BLE001
+                    warnings.warn(f"the watchdog consumer failed: {error!r}", stacklevel=2)
+                    continue
+                if is_stopped:
                     return
         finally:
             # cancelled by asyncio.run's teardown, as a script that never stops is. A consumer
@@ -888,13 +1037,23 @@ class WatchdogSession(Session):
                 continue
             event = self.arrival2event(item)
             if event.is_directory:
+                # an access closed by this deletion or move is logged before it
+                self.flush_within(event.src_path)
                 key = (event.event_type, event.src_path, event.dest_path)
                 if key not in seen:
                     seen.add(key)
                     self.apply_directory(event)
                 continue
-            if event.apply(trail) is not None:
+            if self.fold(event, item.at):
+                continue
+            entry = event.apply(trail)
+            if entry is not None:
                 moved |= event.event_type == "moved"
+                if (
+                    event.event_type == "moved"
+                    and isinstance(entry, Asset)
+                ):
+                    self.reads.add(entry)
                 continue
             # a file appearing that is not tracked is tracked if .ontrail takes it
             if event.event_type in ("created", "moved"):
@@ -904,7 +1063,247 @@ class WatchdogSession(Session):
         # a file moved into a directory not yet watched needs that directory watched
         if moved:
             self.reconcile()
+        self.end_folds(time.time())
         return stopped
+
+    def fold(
+            self,
+            event: WatchdogEvent,
+            at: float,
+    ) -> bool:
+        """
+        Fold a file event into its path's session. Returns True if nothing of the event is left to
+        apply.
+        - A move or a deletion ends the sessions of its paths first, so they are logged before it.
+        - A rename from an untracked path onto a tracked file is folded as a replacement of the
+          file, since the file did not move. Its content was replaced.
+        - Any other event on a tracked file is folded, as is a creation anywhere. The session of a
+          new file decides whether `.ontrail` takes it when it ends.
+        - An event on an untracked file that no session holds is dropped, as it was before.
+        """
+        trail = self._trail
+        event_type = event.event_type
+        source = Path(event.src_path).resolve()
+        if event_type in ('moved', 'deleted'):
+            self.end_write(source)
+            if (
+                event_type != 'moved'
+                or not event.dest_path
+            ):
+                return False
+            destination = Path(event.dest_path).resolve()
+            self.end_write(destination)
+            replaced = trail.assets.get(destination)
+            if (
+                trail.assets.get(source) is None
+                and replaced is not None
+                and not replaced.is_directory
+            ):
+                self.add_fold(str(destination), 'replaced', at)
+                return True
+            # a part renamed into place rewrites its shapefile
+            shapefile = self.shapefile(destination)
+            if (
+                trail.assets.get(source) is None
+                and shapefile is not None
+            ):
+                self.add_fold(str(shapefile), 'replaced', at)
+                return True
+            return False
+        if event_type not in FOLDED:
+            return False
+        # trail: shapefile - a part's events belong to the session of its .shp
+        shapefile = self.shapefile(source)
+        if shapefile is not None:
+            if event_type == 'created':
+                event_type = 'modified'
+            self.add_fold(str(shapefile), event_type, at)
+            return True
+        path = str(source)
+        if path not in self.folds:
+            if (
+                source in trail.entries.untracked
+                or trail.entries.is_metadata(source)
+            ):
+                return True
+            asset = trail.assets.get(source)
+            if (
+                asset is None
+                and event_type != 'created'
+            ):
+                return True
+            if (
+                asset is not None
+                and asset.is_directory
+            ):
+                return False
+        self.add_fold(path, event_type, at)
+        return True
+
+    def shapefile(self, path: Path) -> Path | None:
+        """
+        The .shp whose session an untracked shapefile part belongs to: a tracked .shp, or one
+        whose session is open, as while a new shapefile is written. None for any other path.
+        """
+        if self._trail.assets.get(path) is not None:
+            return None
+        shp = sibling_shp(path)
+        if shp is None:
+            return None
+        if (
+            self._trail.assets.get(shp) is not None
+            or str(shp) in self.folds
+        ):
+            return shp
+        return None
+
+    def flush_within(self, path: str) -> None:
+        """Log the writes waiting for a read on assets at or below a directory."""
+        trail = self._trail
+        root = Path(path)
+        for identifier in [*self.reads.taken, *self.reads.writes]:
+            asset = trail.assets.id2entry.get(identifier)
+            if (
+                asset is None
+                or asset.path == root
+                or asset.path.is_relative_to(root)
+            ):
+                self.reads.flush(identifier)
+
+    def end_write(self, path: Path) -> None:
+        """Log a path's open session, and its write still waiting for a read, before a move or deletion."""
+        self.end_fold(str(path))
+        asset = self._trail.assets.get(path)
+        if asset is not None:
+            self.reads.flush(asset.id)
+
+    def add_fold(
+            self,
+            path: str,
+            event_type: str,
+            at: float,
+    ) -> None:
+        """Fold one event into the path's session. An event past the session's deadline ends it first."""
+        fold = self.folds.get(path)
+        if (
+            fold is not None
+            and at > fold.deadline(self.fold_settle, self.fold_quiet)
+        ):
+            self.end_fold(path)
+            fold = None
+        if fold is None:
+            fold = Fold(path=path, started=at, ended=at, last=at)
+            self.folds[path] = fold
+        fold.add(event_type, at)
+
+    def fold_deadline(self) -> float | None:
+        """The epoch time the next file session ends, or None when none is open."""
+        deadlines = [
+            fold.deadline(self.fold_settle, self.fold_quiet)
+            for fold in self.folds.values()
+        ]
+        if not deadlines:
+            return None
+        return min(deadlines)
+
+    def end_folds(self, now: float | None = None) -> None:
+        """End the file sessions whose deadline has passed at `now`, or every session."""
+        due = [
+            path
+            for path, fold in self.folds.items()
+            if now is None
+            or fold.deadline(self.fold_settle, self.fold_quiet) <= now
+        ]
+        for path in due:
+            self.end_fold(path)
+
+    def end_fold(self, path: str) -> FileAccessEvent | None:
+        """
+        End the session of a path and log it as one FileAccessEvent. A created file that is not
+        tracked is scanned first, so `.ontrail` decides on the finished file, and its registration
+        comes before the session. A session that an observer claims is not logged here.
+        """
+        fold = self.folds.pop(path, None)
+        if fold is None:
+            return None
+        trail = self._trail
+        source = Path(path)
+        asset = trail.assets.get(source)
+        if asset is None:
+            if not fold.is_created:
+                return None
+            with suppress(FileNotFoundError):
+                trail.assets.scan(source)
+            asset = trail.assets.get(source)
+            if asset is None:
+                return None
+        if asset.is_directory:
+            return None
+        try:
+            metadata = source.stat()
+            st_size = metadata.st_size
+            st_mtime = metadata.st_mtime
+        except OSError:
+            st_size = None
+            st_mtime = None
+        is_changed = (st_size, st_mtime) != self.last_stat(asset)
+        event = FileAccessEvent(
+            src_path=path,
+            event_type=fold.event_type(is_changed),
+            timestamp=datetime.fromtimestamp(fold.ended, UTC),
+            started=datetime.fromtimestamp(fold.started, UTC),
+            st_size=st_size,
+            st_mtime=st_mtime,
+        )
+        event.entry = asset
+        self.stats[asset.id] = (st_size, st_mtime)
+        is_write = event.event_type in ('created', 'modified')
+        for observer in self._parent.observers:
+            if observer(event):
+                # the observer logs the write. Its read still follows, as a MetadataEvent
+                if is_write:
+                    self.reads.add(asset, is_immediate=True)
+                return event
+        if (
+            is_write
+            and type(asset.metadata) is not Metadata
+        ):
+            # the session waited for the writer to finish, so the summary is read now, and the
+            # write is logged with what changed
+            self.reads.add(asset, is_immediate=True, write=event)
+            return event
+        event.apply(trail)
+        if is_write:
+            # a file with no reader is only stat'ed, to keep its baseline current
+            self.reads.add(asset, is_immediate=True)
+        return event
+
+    def last_stat(self, asset: Asset) -> tuple[int | None, float | None] | None:
+        """
+        The size and mtime last recorded for a file asset, or None if none was. A MetadataEvent
+        keeps the mtime in nanoseconds. It is converted as `os.stat` converts it.
+        """
+        stat = self.stats.get(asset.id)
+        if stat is not None:
+            return stat
+        events = self._trail.events
+        for key in reversed(events.ids):
+            event = events.data[key]
+            if (
+                event.entry is not asset
+                or getattr(event, 'st_size', None) is None
+            ):
+                continue
+            if not isinstance(event, MetadataEvent):
+                out = (event.st_size, event.st_mtime)
+                return out
+            if event.st_mtime_ns is None:
+                out = (event.st_size, None)
+                return out
+            seconds, nanoseconds = divmod(event.st_mtime_ns, 10**9)
+            out = (event.st_size, seconds + nanoseconds * 1e-9)
+            return out
+        return None
 
     def record(self, access: Access) -> DirectoryAccessEvent | None:
         """
@@ -916,6 +1315,13 @@ class WatchdogSession(Session):
         if not isinstance(asset, DirAsset):
             return None
         event = access.to_event(asset)
+        if (
+            event.event_type == 'modified'
+            and type(asset.metadata) is not Metadata
+        ):
+            # the access already waited for quiet. It is logged with what changed in the store
+            self.reads.add(asset, is_immediate=True, write=event)
+            return event
         event.apply(trail)
         return event
 
@@ -927,15 +1333,20 @@ class WatchdogSession(Session):
         """
         if not self:
             return
+        self.end_fold(str(asset.path))
         for access in self.take(asset.id):
             self.record(access)
+        # a write waiting for its read is logged before the event about to follow it
+        self.reads.flush(asset.id)
 
     def record_open(self) -> None:
         """
-        Log every access the run still holds, open or queued, with one write. Nothing else it holds
-        is consumed.
+        Log every file session the run still holds, then every access, open or queued, with one
+        write. Nothing else it holds is consumed.
         """
         trail = self._trail
+        self.end_folds()
+        self.reads.flush()
         events = []
         for access in self.take():
             asset = trail.assets.id2entry.get(access.asset)
@@ -1119,3 +1530,4 @@ def _exit(reference: weakref.ref[WatchdogSession]) -> None:
     ):
         return
     session.record_open()
+    session._trail.baselines.save()

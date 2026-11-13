@@ -23,7 +23,6 @@ from prompt_toolkit.layout import (
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.widgets import TextArea
 
-from trail.cli.check import Check
 from trail.cli.command import CommandCompleter
 from trail.cli.commands import Commands
 from trail.cli.feed import Feed
@@ -62,17 +61,10 @@ class Console(Node):
         self.restarting = False
         self.active_triage: Triage | None = None
 
-    async def triage(
-        self,
-        standalone: bool = False,
-        check: bool = False,
-    ) -> None:
+    async def triage(self, standalone: bool = False) -> None:
         if self.active_triage is not None:
             return
-        if check:
-            self.active_triage = Check(self._trail)
-        else:
-            self.active_triage = Triage(self._trail)
+        self.active_triage = Triage(self._trail)
         try:
             if standalone:
                 await self.active_triage.run()
@@ -327,11 +319,7 @@ class Run(Node):
     # whether the watchdog's death has already been reported
     failed = False
 
-    async def __call__(
-        self,
-        triage: bool = False,
-        check: bool = False,
-    ) -> None:
+    async def __call__(self, triage: bool = False) -> None:
         """
         Run the application until it exits, printing new events to the feed as they arrive.
         See `banner` and `stream` for what is printed. What the watchdog logs as it stops is
@@ -339,7 +327,7 @@ class Run(Node):
         """
         trail = self._trail
         application = self._console.application
-        if not triage and not check:
+        if not triage:
             self.banner()
         # the events already logged belong to earlier sessions, so the feed starts after them
         self.cursor = len(trail.events.ids)
@@ -366,9 +354,7 @@ class Run(Node):
                     warnings.catch_warnings(),
                 ):
                     warnings.showwarning = self.warn
-                    if check:
-                        await self._console.triage(standalone=True, check=True)
-                    elif triage:
+                    if triage:
                         await self._console.triage(standalone=True)
                     else:
                         await application.run_async()

@@ -1,0 +1,13 @@
+{
+"type": "FeatureCollection",
+"name": "cities_b",
+"crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:EPSG::3857" } },
+"features": [
+{ "type": "Feature", "properties": { "name": "a", "country": "x" }, "geometry": { "type": "Point", "coordinates": [ 0.0, 0.0 ] } },
+{ "type": "Feature", "properties": { "name": "b", "country": "x" }, "geometry": { "type": "Point", "coordinates": [ 111319.490793273565941, 111325.142866385096568 ] } },
+{ "type": "Feature", "properties": { "name": "c", "country": "x" }, "geometry": { "type": "Point", "coordinates": [ 222638.981586547131883, 222684.208505544054788 ] } },
+{ "type": "Feature", "properties": { "name": "d", "country": "x" }, "geometry": { "type": "Point", "coordinates": [ 333958.472379820712376, 334111.171401959611103 ] } },
+{ "type": "Feature", "properties": { "name": "e", "country": "x" }, "geometry": { "type": "Point", "coordinates": [ 445277.963173094263766, 445640.109656026237644 ] } },
+{ "type": "Feature", "properties": { "name": "f", "country": "x" }, "geometry": { "type": "Point", "coordinates": [ 556597.453966367873363, 557305.257274576812051 ] } }
+]
+}

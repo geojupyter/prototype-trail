@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from functools import cached_property
 from typing import TYPE_CHECKING, Self
 
 from trail.jupyter.consumer import Consumer
+from trail.jupyter.kernels import Kernels
 from trail.jupyter.message import Messages
 from trail.jupyter.server import Servers
 from trail.session import Session
@@ -32,6 +34,11 @@ class JupyterSession(Session):
         return out
 
     @cached_property
+    def kernels(self) -> Kernels:
+        out = Kernels(self)
+        return out
+
+    @cached_property
     def messages(self) -> Messages:
         out = Messages(self)
         return out
@@ -52,6 +59,8 @@ class JupyterSession(Session):
             return False
         self.pid = os.getpid()
         self.is_started = True
+        # trail: saves - the file sessions of Jupyter's saves are offered to their save runs
+        self._trail.watchdog.observers.append(self.consumer.claim)
         try:
             self.task = loop.create_task(self.run(), name='jupyter-discovery')
             self.servers.refresh()
@@ -65,6 +74,8 @@ class JupyterSession(Session):
             while True:
                 await asyncio.sleep(self.interval)
                 self.servers.refresh()
+                self.kernels.refresh()
+                self.consumer.close_runs(before=time.time() - self.consumer.run_gap)
         finally:
             if self.task is asyncio.current_task():
                 self.close()
@@ -87,8 +98,21 @@ class JupyterSession(Session):
         try:
             for server in self.servers.values():
                 server.close('stopped')
+            self.kernels.close()
+            self.close_runs()
         finally:
+            observers = self._trail.watchdog.observers
+            if self.consumer.claim in observers:
+                observers.remove(self.consumer.claim)
             self._trail.lock.release(self)
+
+    def close_runs(self) -> None:
+        # the file sessions of the last saves are offered to their runs before the runs are logged
+        watchdog = self._trail.watchdog.session
+        if watchdog:
+            for path in list(self.consumer.runs):
+                watchdog.end_fold(str(path))
+        self.consumer.close_runs()
 
     async def stop(self) -> None:
         if not self:

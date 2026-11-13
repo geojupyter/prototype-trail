@@ -233,6 +233,23 @@ class TestOnTrail:
             assert trail.events.select[-1].rule == '*.safe'
             assert product / 'manifest.safe' not in trail.assets
 
+    def test_the_geospatial_preset_discovers_saved_maps(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            (root / 'world.jGIS').write_text('{}', encoding='utf-8')
+            (root / 'city.qgz').write_bytes(b'PK')
+            (root / 'city.qgs').write_text('<qgis/>', encoding='utf-8')
+            trail = Trail(root, ontrail='geospatial')
+            rules = {
+                event.src_path.rsplit('/', 1)[-1]: event.rule
+                for event in trail.events.select('cls=AddAssetEvent')
+            }
+            assert rules == {
+                'world.jGIS': '*.jgis',
+                'city.qgz': '*.qgz',
+                'city.qgs': '*.qgs',
+            }
+
     def test_a_new_trail_copies_the_default_preset(self) -> None:
         with self.workspace() as root:
             (root / '.ontrail').unlink()

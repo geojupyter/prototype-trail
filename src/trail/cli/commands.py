@@ -365,19 +365,6 @@ class TriageCommand(Command):
         console.application.create_background_task(console.triage())
 
 
-class CheckCommand(Command):
-    name = 'check'
-    usage = 'check'
-    summary = 'check pending events in one list; accept or delete them'
-
-    def __call__(self, arguments: Sequence[str]) -> None:
-        if arguments:
-            self._feed.error(f'usage: {self.usage}')
-            return
-        console = self._console
-        console.application.create_background_task(console.triage(check=True))
-
-
 class HelpCommand(Command):
     """Print the commands, the key bindings in `KEYS`, and the notes in `NOTES`."""
 

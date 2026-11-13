@@ -11,9 +11,11 @@ from typing import TYPE_CHECKING, ClassVar, Final, Self
 
 from trail import fmt
 from trail.entry import Entry, EntryCollection
+from trail.metadata import Metadata
 from trail.util import PathLike
 
 if TYPE_CHECKING:
+    from trail.event import MetadataEvent
     from trail.session import Access
     from trail.trail import Trail
 
@@ -41,6 +43,8 @@ class Asset(Entry):
     )
 
     is_directory: bool = field(default=False, repr=False)
+    # a summary of the file, to say what changed in it. Not a dataclass field
+    metadata = Metadata.descriptor()
 
     if TYPE_CHECKING:
         _parent: Assets = field(init=False, repr=False)
@@ -150,6 +154,8 @@ class Asset(Entry):
                         size += stat.st_size
         return count, size, newest
 
+    # No: fingerprint is not intuititive enoguh of a name. Let's use stat() instead.
+
     @property
     def st_size(self) -> int:
         """Size of the asset, in bytes. A directory asset sums the files inside it."""
@@ -162,6 +168,16 @@ class Asset(Entry):
         it.
         """
         return self.fingerprint[2]
+
+    def _unregister(self) -> None:
+        """Log the asset's open file session or dirasset access, then remove it."""
+        collection = self._parent
+        if (
+            collection is not None
+            and collection.id2entry.get(self.id) is self
+        ):
+            self._trail.watchdog.session.flush(self)
+        super()._unregister()
 
     def move(self, destination: PathLike) -> Self:
         """
@@ -268,16 +284,6 @@ class DirAsset(Asset):
         if not session:
             return None
         return session.accesses[self.id]
-
-    def _unregister(self) -> None:
-        """Log the dirasset's open access, then remove it from the collection."""
-        collection = self._parent
-        if (
-            collection is not None
-            and collection.id2entry.get(self.id) is self
-        ):
-            self._trail.watchdog.session.flush(self)
-        super()._unregister()
 
 
 def walk(
@@ -400,8 +406,30 @@ class Assets(EntryCollection[Asset]):
                     trail.dirs.refresh()
             tracked.append(asset)
         if made:
-            trail.watchdog.session.reconcile()
+            session = trail.watchdog.session
+            session.reconcile()
+            # the baselines of new assets with a reader are read in the background
+            if session.is_active:
+                readable = [
+                    asset
+                    for asset in tracked
+                    if type(asset.metadata) is not Metadata
+                ]
+                session.reads.load(readable)
         return tracked
+
+    def observe(self, basis: str = 'manual') -> list[MetadataEvent]:
+        """
+        Compare each asset with its last recorded state and log what changed. Takes one stat per
+        asset and reads only the files whose stat changed. Needs no watcher.
+        """
+        events = []
+        with self._trail.baselines.batch():
+            for asset in self:
+                event = asset.metadata.observe(basis)
+                if event is not None:
+                    events.append(event)
+        return events
 
     def _absorb(self, dirasset: DirAsset) -> None:
         """

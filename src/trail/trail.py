@@ -15,6 +15,7 @@ from trail.entries import Entries
 from trail.event import Events, WatchdogEvent
 from trail.jupyter import Jupyter
 from trail.lock import Lock
+from trail.metadata.baselines import Baselines
 from trail.node import Node
 from trail.offtrail import OffTrail
 from trail.ontrail import OnTrail, Scopes
@@ -101,6 +102,12 @@ class Trail(Node):
     @cached_property
     def lock(self) -> Lock:
         out = Lock(self)
+        return out
+
+    @cached_property
+    def baselines(self) -> Baselines:
+        """The last observed state of each asset, kept for the next run."""
+        out = Baselines(self)
         return out
 
     @cached_property
@@ -291,10 +298,32 @@ class Trail(Node):
             self.json.load()
             self.events.jsonl.read()
             self.json.dump()
+            if created:
+                self._log_init()
             # the replay rebuilt the Dirs that were live, and .ontrail may have changed since
             self.dirs.refresh()
             self.assets.scan()
             self.watchdog.session.reconcile()
+
+    def _log_init(self) -> None:
+        """Log the start of a new project, with the rules it starts with."""
+        from trail.event import InitTrailEvent
+
+        ontrail = [
+            str(rule)
+            for rule in self.ontrail
+        ]
+        offtrail = [
+            str(rule)
+            for rule in self.offtrail
+        ]
+        event = InitTrailEvent(
+            trail_id=self.id,
+            root=str(self.dir.parent),
+            ontrail=ontrail,
+            offtrail=offtrail,
+        )
+        event.apply(self)
 
     @staticmethod
     def locate(dir: PathLike) -> Path | None:

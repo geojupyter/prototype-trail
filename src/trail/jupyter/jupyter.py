@@ -6,7 +6,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from trail.jupyter.event import DocumentEvent
+from trail.jupyter.event import DocumentEvent, ModeEvent, PageEvent
 from trail.jupyter.server import JSON, JSONs, Secret, normalize_url
 from trail.jupyter.session import JupyterSession
 from trail.node import Node
@@ -87,16 +87,24 @@ class Jupyter(Node):
             frontend_id: str,
     ) -> Events:
         url = normalize_url(server)
+        # trail: mode - tool changes share the focus counter of the page that sent them.
         events = [
             event
             for event in self._trail.events
-            if isinstance(event, DocumentEvent)
-            and event.is_focus
-            and event.server == url
-            and event.frontend_id == frontend_id
+            if (
+                (
+                    isinstance(event, ModeEvent)
+                    or (
+                        isinstance(event, DocumentEvent)
+                        and event.is_focus
+                    )
+                )
+                and event.server == url
+                and event.frontend_id == frontend_id
+            )
         ]
 
-        def order(event: DocumentEvent) -> tuple[bool, int, object]:
+        def order(event: PageEvent) -> tuple[bool, int, object]:
             sequence = event.focus_seq
             if type(sequence) is int:
                 out = (False, sequence, event.timestamp)

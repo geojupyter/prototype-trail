@@ -1,0 +1,91 @@
+"$id": "https://schema.jupytergis.org/events/source/v1"
+version: "1"
+title: "JupyterGIS source event"
+description: "A JupyterGIS source was added, removed, or pointed at another data reference. Edits inside inline data are not reported."
+type: "object"
+definitions:
+  sourceReference:
+    title: "Source reference"
+    description: "Where a source's data comes from. Never holds credentials, query parameters outside a safe list, or inline data."
+    type: "object"
+    required:
+      - "id"
+      - "type"
+    additionalProperties: false
+    properties:
+      id:
+        description: "The source's ID."
+        type: "string"
+      type:
+        description: "The source's type, such as `GeoJSONSource`."
+        type: "string"
+      path:
+        description: "The path as written in the source. `null` when the path is a URL."
+        type: ["string", "null"]
+      resolved_path:
+        description: "The Contents path that JupyterGIS loads, relative to the server root. `null` for URLs."
+        type: ["string", "null"]
+      tables:
+        description: "A GeoPackage source's tables."
+        type: "array"
+        items:
+          type: "string"
+      urls:
+        description: "Each URL of the source, without user information, fragment or unsafe query parameters."
+        type: "array"
+        items:
+          type: "string"
+      inline:
+        description: "For embedded data, the field that holds it and its serialized size in bytes."
+        type: "object"
+        required:
+          - "field"
+          - "size"
+        additionalProperties: false
+        properties:
+          field:
+            type: "string"
+          size:
+            type: "integer"
+            minimum: 0
+required:
+  - "verb"
+  - "object"
+properties:
+  subject:
+    title: "Subject"
+    description: "The performer of `verb`. Client ID of acting user, if available."
+    type: "string"
+  local:
+    title: "Local"
+    description: "True when the change originated in the document copy that reported it."
+    type: "boolean"
+  verb:
+    title: "Verb"
+    description: "Source action. `updated` means the data reference changed."
+    enum:
+      - "added"
+      - "updated"
+      - "removed"
+  object:
+    title: "Object"
+    description: "The thing that `verb` was performed on."
+    type: "object"
+    required:
+      - "document_path"
+      - "source_id"
+    properties:
+      document_path:
+        title: "Document path"
+        description: "The path of the `.jGIS` document, or `null` if ephemeral."
+        type: ["string", "null"]
+      source_id:
+        title: "Source ID"
+        description: "Unique ID of the source."
+        type: "string"
+      old:
+        description: "The reference before `verb`. Absent for `added`."
+        $ref: "#/definitions/sourceReference"
+      new:
+        description: "The reference after `verb`. Absent for `removed`."
+        $ref: "#/definitions/sourceReference"

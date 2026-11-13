@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
+    "defusedxml>=0.7",
     "ipykernel>=7.3.0",
     "jupyter-core>=5",
     "pathspec>=0.12",
@@ -20,6 +21,14 @@ maintainers = [
     { name = "Daniel Hodczak", email = "dhodcz2@uic.edu" }
 ]
 
+
+[project.optional-dependencies]
+# readers for formats whose metadata needs a library. Without one, its files keep only a stat
+formats = [
+    "h5py>=3",
+    "netCDF4>=1.6",
+    "pyarrow>=14",
+]
 
 [project.scripts]
 trail = "trail.cli:main"

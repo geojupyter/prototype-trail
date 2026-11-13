@@ -13,11 +13,13 @@ import pytest
 from trail import Trail
 from trail.asset import Asset, Assets
 from trail.checkpoint import Checkpoint
+from trail.cli.render import Renderer
 from trail.event import (
     AddAssetEvent,
     AddDirEvent,
     DirectoryAccessEvent,
     Events,
+    InitTrailEvent,
     RemoveAssetEvent,
     RemoveDirEvent,
     WatchdogEvent,
@@ -697,7 +699,8 @@ class TestTrail:
 
                 file_entry = trail.assets[tsv]
                 nested_entry = trail.assets[nested]
-                assert self.records(trail.assets) == [file_entry, nested_entry]
+                # a new file is registered when its write session ends, after the new folder's scan
+                assert self.records(trail.assets) == [nested_entry, file_entry]
                 # a new subfolder of a root is watched, but it is not a Dir
                 assert list(trail.dirs.path2entry) == [root]
                 assert trail.watchdog.covers(directory)
@@ -713,9 +716,9 @@ class TestTrail:
                 history = trail.events.jsonl.path.read_bytes()
                 restored = Trail(root)
                 assert restored.assets.ids == trail.assets.ids
-                assert restored.assets.select[0] is restored.assets[tsv]
-                assert restored.assets.select[0].id == file_entry.id
-                assert restored.assets.select[-1].id == nested_entry.id
+                assert restored.assets.select[0] is restored.assets[nested]
+                assert restored.assets.select[0].id == nested_entry.id
+                assert restored.assets.select[-1].id == file_entry.id
                 assert restored.events.jsonl.path.read_bytes() == history
                 restored.offtrail(tsv, nested)
                 assert restored.assets.ids == []
@@ -1085,3 +1088,33 @@ if __name__ == "__main__":
     for method_name, description in tests:
         getattr(test_object, method_name)()
         print(f"  ✓ {description}")
+
+
+@pytest.mark.init_record
+class TestInitialized:
+    def test_a_new_project_logs_initialized_first(self, tmp_path: Path) -> None:
+        root = tmp_path.resolve()
+        (root / '.ontrail').write_text('# mine\n./\n*.csv\n', encoding='utf-8')
+        (root / 'a.csv').write_text('a\n', encoding='utf-8')
+        trail = Trail(root)
+        first, *rest = trail.events
+        assert isinstance(first, InitTrailEvent)
+        assert first.entry is None
+        assert first.trail_id == trail.id
+        assert first.root == str(root)
+        assert first.ontrail == ['./', '*.csv']
+        assert first.offtrail == ['.*']
+        assert [type(event) for event in rest] == [AddDirEvent, AddAssetEvent]
+        assert Renderer.verb(first) == 'initialized'
+
+    def test_reopening_keeps_one_initialized(self, tmp_path: Path) -> None:
+        trail = Trail(tmp_path)
+        [initialized] = trail.events.select('cls=InitTrailEvent')
+        reopened = Trail(tmp_path)
+        assert reopened.events.select('cls=InitTrailEvent').ids == [initialized.id]
+        assert reopened.events[initialized.id].to_record() == initialized.to_record()
+
+    def test_a_trail_without_a_directory_logs_nothing(self) -> None:
+        trail = Trail()
+        assert len(trail.events.select('cls=InitTrailEvent')) == 0
+        assert trail.events.jsonl.path is None

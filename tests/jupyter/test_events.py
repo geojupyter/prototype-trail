@@ -20,14 +20,20 @@ from trail.jupyter.event import (
     JupyterEvent,
     LayerEvent,
     LayerV1Event,
+    ModeV1Event,
+    SourceV1Event,
     ViewportV1Event,
 )
 from trail.jupyter.server import Server
+from trail.jupyter.source import Inline, Source
 
-from .conftest import document
+from .conftest import document, layer, mode, reference
 
 
-@pytest.mark.parametrize('name', ['document', 'layer', 'viewport', 'contents_service'])
+@pytest.mark.parametrize(
+    'name',
+    ['document', 'layer', 'source', 'mode', 'viewport', 'contents_service'],
+)
 def test_schema_registry_and_roundtrip(
         name: str,
         trail: Trail,
@@ -47,6 +53,16 @@ def test_schema_registry_and_roundtrip(
         elif name == 'layer':
             verb = 'updated'
             obj.update(layer_id='layer-1', old={'name': 'old'}, new={'name': 'new'})
+        elif name == 'source':
+            verb = 'updated'
+            obj.update(
+                source_id='S1',
+                old=reference('a.geojson'),
+                new=reference('b.geojson'),
+            )
+        elif name == 'mode':
+            verb = 'changed'
+            obj.update(mode='identifying', previous='panning')
         else:
             verb = 'moved'
             obj['new'] = {
@@ -69,7 +85,12 @@ def test_schema_registry_and_roundtrip(
         **payload,
     )
     text = json.dumps(capsule)
-    message = trail.jupyter.session.consumer.receive(server, text, at=1000)
+    consumer = trail.jupyter.session.consumer
+    message = consumer.receive(server, text, at=1000)
+    if name == 'contents_service':
+        # a save joins a run, which is logged once the saves stop
+        assert message.outcome == 'used'
+        consumer.close_runs()
     assert message.outcome == 'recorded'
     event = trail.events[message.event]
     assert type(event) is JupyterEvent.registry[schema['$id']]
@@ -280,6 +301,8 @@ def test_classes_are_registered_before_replay() -> None:
     assert Event.classes['LayerV1Event'] is LayerV1Event
     assert Event.classes['ViewportV1Event'] is ViewportV1Event
     assert Event.classes['ContentsServiceV1Event'] is ContentsServiceV1Event
+    assert Event.classes['SourceV1Event'] is SourceV1Event
+    assert Event.classes['ModeV1Event'] is ModeV1Event
 
 
 def test_query_preserves_payload_paths_and_resolves_entry_paths(
@@ -310,3 +333,215 @@ def test_captured_server_feed_replays_in_trail(
     assert len(trail.events.select('cls=DocumentEvent is_focus=true')) == 5
     reopened = Trail(trail.dir)
     assert reopened.events.ids == trail.events.ids
+
+
+@pytest.mark.parametrize(('local', 'expected'), [(True, True), (False, False), (None, None)])
+def test_local_is_shown_and_selectable(
+        local: bool | None,
+        expected: bool | None,
+        trail: Trail,
+        server: Server,
+) -> None:
+    extra = {}
+    if local is not None:
+        extra['local'] = local
+    message = trail.jupyter.session.consumer.receive(server, layer(**extra))
+    event = trail.events[message.event]
+    assert event.is_local is expected
+    rows = dict(event._repr_items())
+    if expected is None:
+        assert 'local' not in rows
+    else:
+        assert rows['local'] is expected
+    selected = trail.events.select('is_local=false')
+    assert (event in selected) is (expected is False)
+
+
+def test_source_from_payload() -> None:
+    path = Source.from_payload(reference('data/x.geojson', '../data/x.geojson'))
+    assert path == Source(
+        id='S1',
+        type='GeoJSONSource',
+        path='../data/x.geojson',
+        resolved_path='data/x.geojson',
+    )
+    assert str(path) == 'GeoJSONSource ../data/x.geojson'
+    url = Source.from_payload(
+        {'id': 'S2', 'type': 'RasterSource', 'urls': ['https://tile.org/{z}/{x}/{y}.png']},
+    )
+    assert url.urls == ('https://tile.org/{z}/{x}/{y}.png',)
+    assert str(url) == 'RasterSource https://tile.org/{z}/{x}/{y}.png'
+    package = Source.from_payload(
+        reference('roads.gpkg', type='GeoPackageVectorSource', tables=['roads', 'bridges']),
+    )
+    assert str(package) == 'GeoPackageVectorSource roads.gpkg (roads, bridges)'
+    inline = Source.from_payload(
+        {'id': 'S3', 'type': 'GeoJSONSource', 'inline': {'field': 'data', 'size': 48213}},
+    )
+    assert inline.inline == Inline(field='data', size=48213)
+    assert str(inline) == 'GeoJSONSource inline data 47.1 KiB'
+    for value in (None, 'S1', {'id': 'S1'}, {'id': 1, 'type': 'GeoJSONSource'}):
+        assert Source.from_payload(value) is None
+    malformed = Source.from_payload(
+        {'id': 'S1', 'type': 'GeoJSONSource', 'path': 3, 'urls': 'x', 'inline': {'field': 'data'}},
+    )
+    assert malformed == Source(id='S1', type='GeoJSONSource')
+
+
+def test_mode_labels_and_selection(
+        trail: Trail,
+        server: Server,
+) -> None:
+    consumer = trail.jupyter.session.consumer
+    first = consumer.receive(server, mode(frontend_id='page-1', focus_seq=2))
+    second = consumer.receive(server, mode('panning', 'identifying'))
+    event = trail.events[first.event]
+    assert isinstance(event, ModeV1Event)
+    assert not event.is_shared
+    rows = dict(event._repr_items())
+    assert rows['verb'] == 'changed'
+    assert rows['mode'] == 'Identify'
+    assert rows['previous'] == 'none'
+    assert rows['focus_seq'] == 2
+    assert Renderer.verb(event) == 'changed'
+    assert list(trail.events.select('mode=identifying')) == [event]
+    assert trail.events.select('previous=identifying').ids == [second.event]
+
+
+def test_baseline_history_replays(
+        trail: Trail,
+        server: Server,
+) -> None:
+    root = trail.dir.parent
+    (root / 'maps').mkdir()
+    (root / 'data').mkdir()
+    for name in ('untitled.jGIS', 'untitled1.jGIS', 'maps/untitled.jGIS', 'maps/untitled1.jGIS', 'maps/city.jGIS'):
+        (root / name).write_text('{}', encoding='utf-8')
+    tracked = {}
+    for name in ('crossings.geojson', 'crossings_2026.geojson'):
+        path = root / 'data' / name
+        path.write_text('{}', encoding='utf-8')
+        [tracked[name]] = trail.assets.add({path: None})
+    schemas = {}
+    for path in (Path(__file__).parent / 'schemas').glob('*.yaml'):
+        schema = yaml.safe_load(path.read_text(encoding='utf-8'))
+        schemas[schema['$id']] = schema
+    path = Path(__file__).parent / 'fixtures' / 'baseline.jsonl'
+    consumer = trail.jupyter.session.consumer
+    for text in path.read_text(encoding='utf-8').splitlines():
+        payload = json.loads(text)
+        schema_id = payload.pop('schema_id')
+        jsonschema.validate(payload, schemas[schema_id], format_checker=jsonschema.FormatChecker())
+        message = consumer.receive(server, text)
+        assert message.outcome == 'recorded'
+    assert len(trail.events.select('cls=DocumentEvent verb=created')) == 4
+    assert len(trail.events.select('cls=SourceEvent verb=updated')) == 1
+    crossings = tracked['crossings.geojson'].id
+    renamed = tracked['crossings_2026.geojson'].id
+    assert len(trail.events.select(f'cls=LayerEvent resource_id={crossings}')) == 4
+    assert len(trail.events.select(f'cls=LayerEvent resource_id={renamed}')) == 2
+    [update] = trail.events.select('cls=SourceEvent verb=updated')
+    assert update.resource_id == renamed
+    assert update.previous_resource_id == crossings
+    remote = trail.events.select('cls=LayerEvent is_local=false')
+    assert [event.verb for event in remote] == ['added', 'removed']
+    assert all(event.source.inline is not None for event in remote)
+    [page] = {
+        event.frontend_id
+        for event in trail.events.select('cls=ModeEvent mode=marking')
+    }
+    timeline = trail.jupyter.focus(server=server.json.url, frontend_id=page)
+    assert [event.focus_seq for event in timeline] == list(range(1, 11))
+    assert [
+        event.mode
+        for event in timeline
+        if isinstance(event, ModeV1Event)
+    ] == ['marking', 'panning']
+    reopened = Trail(trail.dir)
+    assert reopened.events.ids == trail.events.ids
+    for event in trail.events.select('cls=JupyterEvent'):
+        assert reopened.events[event.id].to_record() == event.to_record()
+
+
+def captured_updates() -> list[LayerV1Event]:
+    # grammar-panel edits made in the symbology dialog of examples/earthquakes.jGIS, each closed
+    # with Ok: add mag > 5, add has felt and switch to any, remove both, Ok without a change
+    path = Path(__file__).parent / 'fixtures' / 'symbology.jsonl'
+    out = []
+    for text in path.read_text(encoding='utf-8').splitlines():
+        data = json.loads(text)
+        schema_id = data.pop('schema_id')
+        out.append(LayerV1Event(schema_id=schema_id, data=data))
+    return out
+
+
+def described(event: LayerEvent) -> list[tuple[str, object]]:
+    out = [
+        (name, value)
+        for name, value in event._repr_items()
+        if name.endswith(('added', 'removed', 'changed')) or name == 'symbology'
+    ]
+    return out
+
+
+def test_filter_added_and_removed_are_described() -> None:
+    added, _, removed, _ = captured_updates()
+    assert described(added) == [('filter added', 'mag > 5')]
+    assert described(removed) == [('filter removed', 'mag > 5'), ('filter removed', 'has felt')]
+    assert added.has_filter_change
+
+
+def test_combinator_change_is_described() -> None:
+    _, combined, _, _ = captured_updates()
+    assert described(combined) == [('filter added', 'has felt'), ('combinator changed', 'all -> any')]
+
+
+def test_restyle_has_no_filter_description(trail: Trail) -> None:
+    *_, unchanged = captured_updates()
+    assert described(unchanged) == []
+    assert not unchanged.has_filter_change
+    data = json.loads(json.dumps(unchanged.data))
+    rule = data['object']['new']['parameters']['symbologyState']['layers'][0]['rules'][0]
+    rule['mappings'][0]['scale']['params']['value'] = 4
+    restyled = LayerV1Event(schema_id=LayerV1Event.schema, data=data)
+    assert described(restyled) == [('symbology', 'other changes')]
+    for event in (*captured_updates(), restyled):
+        event.apply(trail)
+    assert len(trail.events.select('cls=LayerEvent has_filter_change=true')) == 3
+
+
+def test_other_layer_fields_are_described() -> None:
+    *_, unchanged = captured_updates()
+    data = json.loads(json.dumps(unchanged.data))
+    new = data['object']['new']
+    new['name'] = 'Large earthquakes'
+    new['visible'] = False
+    new['filters'] = {'logicalOp': 'any', 'appliedFilters': []}
+    new['parameters']['opacity'] = 0.4
+    event = LayerV1Event(schema_id=LayerV1Event.schema, data=data)
+    changes = [value for name, value in event._repr_items() if name == 'change']
+    assert changes == [
+        "name 'Earthquakes' → 'Large earthquakes'",
+        'visible True → False',
+        'filters changed',
+        'opacity 1 → 0.4',
+    ]
+    # the symbology and the source are described by their own rows
+    assert unchanged.changes == []
+
+
+def test_rule_geometry_and_range_conditions_are_worded() -> None:
+    *_, unchanged = captured_updates()
+    data = json.loads(json.dumps(unchanged.data))
+    grammar = data['object']['new']['parameters']['symbologyState']['layers'][0]
+    grammar['when'] = [
+        {'type': 'geometryType', 'value': 'Polygon'},
+        {'type': 'between', 'field': 'mag', 'min': 3.0, 'max': 9},
+    ]
+    grammar['rules'][1]['when'] = [{'type': 'fieldEquals', 'field': 'type', 'value': 'volcano'}]
+    event = LayerV1Event(schema_id=LayerV1Event.schema, data=data)
+    assert described(event) == [
+        ('geometry condition added', 'Polygon'),
+        ('filter added', '3 <= mag <= 9'),
+        ('rule condition added', 'type = volcano'),
+    ]

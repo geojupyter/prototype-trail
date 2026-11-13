@@ -1,12 +1,11 @@
 ./
+*.jgis
+*.qgz
+*.qgs
 *.feather
 *.geojson
 *.gpkg
 *.shp
-*.shx
-*.dbf
-*.prj
-*.cpg
 *.tif
 *.tiff
 *.kml

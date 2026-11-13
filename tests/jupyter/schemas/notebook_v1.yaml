@@ -1,0 +1,44 @@
+"$id": "https://schema.jupytergis.org/events/notebook/v1"
+version: "1"
+title: "Notebook execution request"
+description: "The page sent an execution request for a cell of a notebook, or for a console. The kernel's IOPub messages for the execution carry `request_id` as their parent message id."
+type: "object"
+required:
+  - "verb"
+  - "object"
+properties:
+  subject:
+    title: "Subject"
+    description: "The performer of `verb`, if available."
+    type: "string"
+  verb:
+    title: "Verb"
+    description: "Execution action"
+    enum:
+      - "requested"
+  time:
+    description: "UTC time when the page sent the request."
+    type: "string"
+    format: "date-time"
+  object:
+    title: "Object"
+    description: "The thing that `verb` was performed on."
+    type: "object"
+    required:
+      - "document_path"
+      - "kernel_id"
+      - "request_id"
+    properties:
+      document_path:
+        title: "Document path"
+        description: "The path of the notebook or console that sent the request, or `null`."
+        type: ["string", "null"]
+      kernel_id:
+        description: "The id of the kernel the request was sent to."
+        type: "string"
+      request_id:
+        description: "The `msg_id` of the execute request."
+        type: "string"
+      cell_id:
+        description: "The id of the notebook cell that was executed, when the page supplied one."
+        type: "string"

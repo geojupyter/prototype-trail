@@ -10,12 +10,13 @@ from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import TYPE_CHECKING, ClassVar, Final, Self
+from typing import TYPE_CHECKING, Any, ClassVar, Final, Self
 from uuid import uuid4
 
 from trail import fmt
 from trail.asset import Asset, DirAsset
 from trail.collection import Collection
+from trail.metadata import Change, Metadata
 from trail.node import Node
 from trail.util import normalize_id
 
@@ -255,6 +256,33 @@ class AddAssetEvent(Event):
 
 
 @dataclass(kw_only=True, slots=True, repr=False)
+class InitTrailEvent(Event):
+    """
+    The start of a project. It is logged once, when Trail first writes the project's `.trail`,
+    before the first scan. It holds the rules the project started with, without comments. It has no
+    entry, and a replay changes nothing.
+
+    - `trail_id` is the Trail's id, which `project.json` also holds.
+    - `root` is the project directory.
+    - `ontrail` and `offtrail` are the lines of `.ontrail` and `.offtrail`.
+    """
+
+    trail_id: str
+    root: str
+    ontrail: list[str] = field(default_factory=list)
+    offtrail: list[str] = field(default_factory=list)
+
+    def apply(
+        self,
+        trail: Trail,
+        *,
+        replay: bool = False,
+    ) -> None:
+        if not replay:
+            trail.events.append(self)
+
+
+@dataclass(kw_only=True, slots=True, repr=False)
 class RemoveAssetEvent(Event):
     """
     An asset being untracked. Its path is added to `trail.entries.untracked`, so `.ontrail` does
@@ -291,6 +319,11 @@ class RemoveAssetEvent(Event):
         self.entry = asset
         asset._unregister()
         trail.entries.untracked.add(asset.path)
+        session = trail.watchdog.session
+        if session:
+            session.reads.drop(asset.id)
+        if not replay:
+            trail.baselines.drop(asset.id)
         return asset
 
 
@@ -471,6 +504,27 @@ class WatchdogEvent(Event):
         return None
 
 
+def changes_from_records(changes: list[Change | dict[str, Any]]) -> list[Change]:
+    # a replay passes each change as the log holds it
+    out = [
+        Change.from_record(change) if isinstance(change, dict) else change
+        for change in changes
+    ]
+    return out
+
+
+def change_items(
+        format: str,
+        changes: list[Change],
+        more: int,
+) -> Iterator[tuple[str, object]]:
+    handler = Metadata.name2cls.get(format, Metadata)
+    for change in changes:
+        yield "change", handler.describe(change)
+    if more:
+        yield "more", f"{more} changes not shown"
+
+
 @dataclass(kw_only=True, slots=True, repr=False)
 class DirectoryAccessEvent(WatchdogEvent):
     """
@@ -496,6 +550,10 @@ class DirectoryAccessEvent(WatchdogEvent):
     is_directory: bool = field(default=True, init=False, repr=False)
     is_synthetic: bool = field(default=True, init=False, repr=False)
     count: dict[str, int] = field(default_factory=dict)
+    # what changed in the dirasset's metadata, read once the access closed
+    format: str = field(default="", repr=False)
+    changes: list[Change] = field(default_factory=list, repr=False)
+    more: int = field(default=0, repr=False)
     entry: DirAsset | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -503,6 +561,7 @@ class DirectoryAccessEvent(WatchdogEvent):
         # a replay passes the start as the log holds it
         if isinstance(self.started, str):
             self.started = datetime.fromisoformat(self.started)
+        self.changes = changes_from_records(self.changes)
 
     def _repr_items(self) -> Iterator[tuple[str, object]]:
         """Yields the fields a repr shows, with the counts on one line and zeros left out."""
@@ -514,6 +573,15 @@ class DirectoryAccessEvent(WatchdogEvent):
                     if value.get(op)
                 )
             yield name, value
+        yield from change_items(self.format, self.changes, self.more)
+
+    def to_record(self) -> dict[str, Any]:
+        out = WatchdogEvent.to_record(self)
+        out["changes"] = [
+            change.to_record()
+            for change in self.changes
+        ]
+        return out
 
     def apply(
         self,
@@ -528,6 +596,137 @@ class DirectoryAccessEvent(WatchdogEvent):
         if not replay:
             trail.events.append(self)
         return self.entry
+
+
+@dataclass(kw_only=True, slots=True, repr=False)
+class FileAccessEvent(WatchdogEvent):
+    """
+    One session of a file: the events from its first notification until the writer closed it and
+    the file stayed quiet, folded into one record. `started` is the first event and `timestamp` the
+    last creation, write or write close. A read that follows does not move it. `st_size` and
+    `st_mtime` are the file's when the session ended. The number of notifications is not kept,
+    since the kernel merges them.
+
+    - `created` if the file was created.
+    - `modified` if it was written, or replaced by a rename onto its path.
+    - `opened` if it was only read, or opened for writing and left unchanged.
+
+    A file with a reader is read once its session ends. `changes` holds what changed in its
+    summary, with `format` the reader's name, so one write is one record.
+    """
+
+    started: datetime
+    is_synthetic: bool = field(default=True, init=False, repr=False)
+    st_size: int | None = None
+    st_mtime: float | None = None
+    format: str = field(default="", repr=False)
+    changes: list[Change] = field(default_factory=list, repr=False)
+    more: int = field(default=0, repr=False)
+    entry: Asset | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        WatchdogEvent.__post_init__(self)
+        # a replay passes the start as the log holds it
+        if isinstance(self.started, str):
+            self.started = datetime.fromisoformat(self.started)
+        self.changes = changes_from_records(self.changes)
+
+    def _repr_items(self) -> Iterator[tuple[str, object]]:
+        """Yields the fields a repr shows, then one `change` line per row."""
+        yield from WatchdogEvent._repr_items(self)
+        yield from change_items(self.format, self.changes, self.more)
+
+    def to_record(self) -> dict[str, Any]:
+        out = WatchdogEvent.to_record(self)
+        out["changes"] = [
+            change.to_record()
+            for change in self.changes
+        ]
+        return out
+
+    def apply(
+        self,
+        trail: Trail,
+        *,
+        replay: bool = False,
+    ) -> Asset | None:
+        """
+        Log the session and return its asset. A created file is registered again, as a created
+        WatchdogEvent registers it.
+        """
+        if replay:
+            return WatchdogEvent.apply(self, trail, replay=True)
+        if (
+            self.event_type == "created"
+            and self.entry is not None
+        ):
+            self.entry._register()
+        trail.events.append(self)
+        return self.entry
+
+
+@dataclass(kw_only=True, slots=True, repr=False)
+class MetadataEvent(Event):
+    """
+    One observed difference in a file's summary. `changes` holds the rows, at most
+    `Metadata.max_changes`, and `more` counts the rows left out. `basis` says what asked for the
+    check: `watchdog`, `cell`, `startup`, `access` or `manual`. It is not who wrote the file. The
+    timestamp is when Trail read the file.
+    """
+
+    src_path: str
+    format: str = ""
+    basis: str = ""
+    st_size: int | None = None
+    st_mtime_ns: int | None = None
+    changes: list[Change] = field(default_factory=list)
+    more: int = 0
+    entry: Asset | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        Event.__post_init__(self)
+        # a replay passes each change as the log holds it
+        changes = []
+        for change in self.changes:
+            if isinstance(change, dict):
+                change = Change.from_record(change)
+            changes.append(change)
+        self.changes = changes
+
+    def _repr_items(self) -> Iterator[tuple[str, object]]:
+        """Yields the fields a repr shows, with one `change` line per row, worded by its format."""
+        handler = Metadata.name2cls.get(self.format, Metadata)
+        for name, value in Event._repr_items(self):
+            if name == "changes":
+                for change in value:
+                    yield "change", handler.describe(change)
+            elif name == "st_mtime_ns":
+                yield "st_mtime", fmt.mtime(value / 1e9)
+            elif name == "more":
+                if value:
+                    yield "more", f"{value} changes not shown"
+            else:
+                yield name, value
+
+    def to_record(self) -> dict[str, Any]:
+        out = Event.to_record(self)
+        out["changes"] = [
+            change.to_record()
+            for change in self.changes
+        ]
+        return out
+
+    def apply(
+        self,
+        trail: Trail,
+        *,
+        replay: bool = False,
+    ) -> Asset | None:
+        """Log the difference and return the asset. A replay restores no baseline."""
+        if not replay:
+            trail.events.append(self)
+        out = self.entry
+        return out
 
 
 class JSONL(Node):
