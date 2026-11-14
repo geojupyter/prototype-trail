@@ -45,7 +45,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-trail = ["ontrail/*.txt", "offtrail/*.txt"]
+trail = ["ontrail.txt", "offtrail.txt"]
 
 [dependency-groups]
 dev = [

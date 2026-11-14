@@ -18,23 +18,22 @@ from trail.util import PathLike
 if TYPE_CHECKING:
     from trail.asset import Asset
 
-PRESETS: Final = files('trail') / 'ontrail'
+PRESET: Final = files('trail') / 'ontrail.txt'
 EXTENSION: Final = re.compile(r'\*\.([^*?[/]+)')
 
 
 @cache
 def extensions() -> tuple[str, ...]:
     """
-    Returns the extensions that the `*.ext` rules of the presets name. Presets are read in the
-    order `OnTrail.available` lists them. Rules are read in file order. Each extension is listed once.
+    Returns the extensions that the `*.ext` rules of the preset name, in file order. Each
+    extension is listed once.
     """
     found: dict[str, None] = {}
-    for name in OnTrail.available():
-        text = (PRESETS / f'{name}.txt').read_text(encoding='utf-8')
-        for rule in TXT.rules(text.splitlines()):
-            match = EXTENSION.fullmatch(rule)
-            if match is not None:
-                found[match.group(1).lower()] = None
+    text = PRESET.read_text(encoding='utf-8')
+    for rule in TXT.rules(text.splitlines()):
+        match = EXTENSION.fullmatch(rule)
+        if match is not None:
+            found[match.group(1).lower()] = None
     out = tuple(found)
     return out
 
@@ -154,7 +153,7 @@ class OnTrail(Rules):
     """
 
     filename = '.ontrail'
-    presets = PRESETS
+    preset = PRESET
 
     def __call__(self, *paths: PathLike) -> Asset | list[Asset]:
         """

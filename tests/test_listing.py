@@ -425,7 +425,8 @@ class TestCliSubcommands:
             root = Path(temporary).resolve()
             (root / "project").mkdir()
             project = root / "project"
-            Trail(project, ontrail="default")
+            (project / ".ontrail").write_text("./\n", encoding="utf-8")
+            Trail(project)
             (project / "file.csv").write_text("data\n", encoding="utf-8")
 
             # test outside project directory

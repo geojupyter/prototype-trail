@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 import pytest
 
 from trail import Trail
-from trail.ontrail import PRESETS, OnTrail
+from trail.ontrail import PRESET
 from trail.rule import Rule
 
 
@@ -204,28 +204,23 @@ class TestOnTrail:
 
         asyncio.run(run())
 
-    def test_the_default_preset_only_watches_the_project(self) -> None:
-        lines = (PRESETS / 'default.txt').read_text(encoding='utf-8').splitlines()
-        assert lines == ['./']
+    def test_the_preset_watches_the_project_and_takes_extensions_in_order(self) -> None:
+        lines = PRESET.read_text(encoding='utf-8').splitlines()
+        assert lines[0] == './'
+        extensions = lines[1:]
+        assert extensions == sorted(set(extensions))
+        for line in extensions:
+            assert line.startswith('*.')
+            assert line == line.lower()
+            assert Rule(line).kind(Path('/')) == 'root scope'
 
-    def test_every_other_preset_watches_the_project_and_takes_extensions(self) -> None:
-        for name in OnTrail.available():
-            if name == 'default':
-                continue
-            lines = (PRESETS / f'{name}.txt').read_text(encoding='utf-8').splitlines()
-            assert lines[0] == './'
-            assert lines[1:]
-            for line in lines[1:]:
-                assert line.startswith('*.')
-                assert Rule(line).kind(Path('/')) == 'root scope'
-
-    def test_the_geospatial_preset_tracks_safe_products(self) -> None:
+    def test_the_preset_tracks_safe_products(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             product = root / 'S2A_MSIL2A_20260101T100000_N0510_R022_T33UUP_20260101T120000.SAFE'
             (product / 'GRANULE').mkdir(parents=True)
             (product / 'manifest.safe').write_text('<xfdu/>\n', encoding='utf-8')
-            trail = Trail(root, ontrail='geospatial')
+            trail = Trail(root)
             assert '*.safe' in trail.ontrail
             # matching ignores case, so the line takes the product's upper-case suffix
             asset = trail.assets[product]
@@ -233,13 +228,13 @@ class TestOnTrail:
             assert trail.events.select[-1].rule == '*.safe'
             assert product / 'manifest.safe' not in trail.assets
 
-    def test_the_geospatial_preset_discovers_saved_maps(self) -> None:
+    def test_the_preset_discovers_saved_maps(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             (root / 'world.jGIS').write_text('{}', encoding='utf-8')
             (root / 'city.qgz').write_bytes(b'PK')
             (root / 'city.qgs').write_text('<qgis/>', encoding='utf-8')
-            trail = Trail(root, ontrail='geospatial')
+            trail = Trail(root)
             rules = {
                 event.src_path.rsplit('/', 1)[-1]: event.rule
                 for event in trail.events.select('cls=AddAssetEvent')
@@ -250,14 +245,15 @@ class TestOnTrail:
                 'city.qgs': '*.qgs',
             }
 
-    def test_a_new_trail_copies_the_default_preset(self) -> None:
+    def test_a_new_trail_copies_the_preset(self) -> None:
         with self.workspace() as root:
             (root / '.ontrail').unlink()
             trail = Trail(root)
-            default = (PRESETS / 'default.txt').read_text(encoding='utf-8')
-            assert (root / '.ontrail').read_text(encoding='utf-8') == default
-            assert list(trail.ontrail) == ['./']
-            assert root / 'top.csv' not in trail.assets
+            preset = PRESET.read_text(encoding='utf-8')
+            assert (root / '.ontrail').read_text(encoding='utf-8') == preset
+            assert list(trail.ontrail) == preset.splitlines()
+            assert root / 'top.csv' in trail.assets
+            assert not trail.ontrail.imported
             assert not trail.ontrail.warnings
 
     def test_a_new_trail_copies_rules_from_a_path(self) -> None:
@@ -275,7 +271,7 @@ class TestOnTrail:
 
     def test_an_existing_ontrail_is_not_overwritten(self) -> None:
         with self.workspace() as root:
-            Trail(root, ontrail='default')
+            Trail(root)
             assert (root / '.ontrail').read_text(encoding='utf-8') == '# premade\n./\n*.csv\n'
 
     def test_a_reopened_trail_does_not_copy_a_preset(self) -> None:
@@ -285,11 +281,11 @@ class TestOnTrail:
             Trail(root)
             assert not (root / '.ontrail').exists()
 
-    def test_an_unknown_preset_is_refused(self) -> None:
+    def test_a_missing_file_of_rules_is_refused(self) -> None:
         with self.workspace() as root:
             (root / '.ontrail').unlink()
-            with pytest.raises(FileNotFoundError, match='default'):
-                Trail(root, ontrail='nonexistent')
+            with pytest.raises(FileNotFoundError, match='No file of rules'):
+                Trail(root, ontrail=root / 'missing.ontrail')
 
     def test_comments_survive_edits(self) -> None:
         with self.workspace() as root:

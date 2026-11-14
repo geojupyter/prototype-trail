@@ -7,7 +7,7 @@ from contextlib import suppress
 from functools import cached_property
 from pathlib import Path
 
-from prompt_toolkit.application import Application, in_terminal
+from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import InMemoryHistory
@@ -29,7 +29,6 @@ from trail.cli.feed import Feed
 from trail.cli.node import Node
 from trail.cli.render import Renderer
 from trail.cli.theme import PROMPT, STYLE
-from trail.cli.triage import Triage
 from trail.event import Event
 from trail.trail import Trail
 
@@ -53,27 +52,15 @@ class Console(Node):
         trail: Trail,
         root: Path,
         returning: bool = False,
+        is_welcomed: bool = False,
     ) -> None:
         Node.__init__(self, trail)
         self.root = root
         # whether the Trail existed before this session, so the banner welcomes the user back
         self.returning = returning
+        # whether `init` printed the welcome already, so the banner leaves it out
+        self.is_welcomed = is_welcomed
         self.restarting = False
-        self.active_triage: Triage | None = None
-
-    async def triage(self, standalone: bool = False) -> None:
-        if self.active_triage is not None:
-            return
-        self.active_triage = Triage(self._trail)
-        try:
-            if standalone:
-                await self.active_triage.run()
-            else:
-                async with in_terminal():
-                    await self.active_triage.run()
-        finally:
-            self.run.cursor = len(self._trail.events)
-            self.active_triage = None
 
     @cached_property
     def run(self) -> Run:
@@ -319,7 +306,7 @@ class Run(Node):
     # whether the watchdog's death has already been reported
     failed = False
 
-    async def __call__(self, triage: bool = False) -> None:
+    async def __call__(self) -> None:
         """
         Run the application until it exits, printing new events to the feed as they arrive.
         See `banner` and `stream` for what is printed. What the watchdog logs as it stops is
@@ -327,8 +314,7 @@ class Run(Node):
         """
         trail = self._trail
         application = self._console.application
-        if not triage:
-            self.banner()
+        self.banner()
         # the events already logged belong to earlier sessions, so the feed starts after them
         self.cursor = len(trail.events.ids)
         # taken before the observer starts, so that nothing recorded between the banner and
@@ -354,10 +340,7 @@ class Run(Node):
                     warnings.catch_warnings(),
                 ):
                     warnings.showwarning = self.warn
-                    if triage:
-                        await self._console.triage(standalone=True)
-                    else:
-                        await application.run_async()
+                    await application.run_async()
             finally:
                 for task in tasks:
                     task.cancel()
@@ -375,11 +358,6 @@ class Run(Node):
         **kwargs: object,
     ) -> None:
         """Print a warning to the feed. Installed as `warnings.showwarning` while running."""
-        triage = self._console.active_triage
-        if triage is not None:
-            triage.message = str(message)
-            triage.application.invalidate()
-            return
         self._feed.info(str(message))
         self._console.application.invalidate()
 
@@ -433,8 +411,6 @@ class Run(Node):
             timestamp: 19:32:48.068
             src_path: /home/user/Downloads/asset.txt
         """
-        if self._console.active_triage is not None:
-            return False
         events = self._trail.events
         identifiers = events.ids
         # a cleared log leaves the cursor past the end, and anything appended afterwards would
@@ -454,7 +430,7 @@ class Run(Node):
     def banner(self) -> None:
         """
         Print the banner. It prints, in order:
-        - The welcome, then a blank line.
+        - The welcome, then a blank line. Both are left out if `init` printed the welcome.
         - The Trail id and the project root.
         - With `--nodir`, a line saying events are held in memory.
         - The asset, Dir and event counts.
@@ -470,8 +446,9 @@ class Run(Node):
         trail = self._trail
         renderer = self._renderer
         feed = self._feed
-        feed.append(renderer.welcome(self._console.returning))
-        feed.blank()
+        if not self._console.is_welcomed:
+            feed.append(renderer.welcome(self._console.returning))
+            feed.blank()
         feed.info(f"trail #{trail.id} on {renderer.home(self._console.root)}")
         if trail.dir is None:
             feed.info("nodir: events are held in memory and discarded on exit")

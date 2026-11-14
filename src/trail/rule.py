@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import warnings
 from collections.abc import Iterable, Iterator, Sequence
@@ -409,15 +408,15 @@ class TXT(Node):
         """Load the rules of the file into its Rules."""
         self._parent.data[:] = self.rules(self.lines())
 
-    def create(self, preset: os.PathLike[str] | str) -> None:
+    def create(self, source: PathLike | Traversable) -> None:
         """
-        Create the file by copying one of its owner's presets. Does nothing if it already exists.
+        Create the file by copying `source`. Does nothing if the file already exists.
 
-        preset:
-            str:
-                The name of a preset from the owning collection's preset directory.
+        source:
+            Traversable:
+                The owner's `preset`.
             Path:
-                A file of rules on disk.
+                A file of rules on disk. Its owner is marked `imported`.
         """
         path = self.path
         if (
@@ -425,18 +424,13 @@ class TXT(Node):
             or path.exists()
         ):
             return
-        if isinstance(preset, os.PathLike):
-            source = Path(preset).expanduser()
+        if source != self._parent.preset:
+            source = Path(source).expanduser()
             if not source.is_file():
                 msg = f'No file of rules at {source}'
                 raise FileNotFoundError(msg)
             # its anchored lines were written for the project it came from
             self._parent.imported = True
-        else:
-            source = self._parent.presets / f'{preset}.txt'
-            if not source.is_file():
-                msg = f'No preset {preset!r}; available: {self._parent.available()}'
-                raise FileNotFoundError(msg)
         self.write(source.read_text(encoding='utf-8'))
         self.read()
 
@@ -503,7 +497,8 @@ class Rules(
     _parent: Trail
     # the name of the file in the project directory
     filename: ClassVar[str] = ''
-    presets: ClassVar[Traversable]
+    # the bundled file that a new file is copied from
+    preset: ClassVar[Traversable]
 
     def __init__(self, parent: Trail | None = None) -> None:
         """
@@ -513,15 +508,6 @@ class Rules(
         Node.__init__(self, parent)
         self.data: list[Rule] = []
         self.imported = False
-
-    @classmethod
-    def available(cls) -> list[str]:
-        out = sorted(
-            entry.name.removesuffix('.txt')
-            for entry in cls.presets.iterdir()
-            if entry.name.endswith('.txt')
-        )
-        return out
 
     @cached_property
     def txt(self) -> TXT:

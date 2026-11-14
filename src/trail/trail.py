@@ -4,6 +4,7 @@ import json
 import os
 import warnings
 from functools import cached_property
+from importlib.resources.abc import Traversable
 from itertools import islice, takewhile
 from pathlib import Path
 from uuid import uuid4
@@ -251,7 +252,7 @@ class Trail(Node):
     def __init__(
         self,
         dir: PathLike | None = None,
-        ontrail: os.PathLike[str] | str | None = "default",
+        ontrail: PathLike | Traversable | None = OnTrail.preset,
     ):
         """
         Open the Trail for a project directory, creating it if it does not exist yet.
@@ -265,17 +266,17 @@ class Trail(Node):
             a directory listed in TRAIL_CEILING_DIRECTORIES.
 
         ontrail:
-            The preset a new `.ontrail` starts from. Ignored when the Trail already exists on file.
+            The file a new `.ontrail` is copied from. Ignored when the Trail already exists on
+            file, or when the project already has a `.ontrail`.
 
-            str:
-                The name of a preset, e.g. 'default'.
+            Traversable:
+                `OnTrail.preset`, the bundled `ontrail.txt`. It watches the project directory
+                and tracks common data formats in it.
             Path:
                 A file of rules on disk.
             None:
                 Start without rules, so nothing is tracked until a rule is added or a path is
                 tracked.
-
-        The presets start with `./`, which watches the project directory.
         """
         super().__init__()
         if dir is None:

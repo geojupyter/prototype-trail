@@ -85,19 +85,17 @@ class TestRuleFiles:
             assert isinstance(canonical, Rule)
             assert canonical.parse(root) == (None, '*.csv')
 
-    def test_each_file_uses_its_own_presets(self) -> None:
+    def test_each_file_has_its_own_preset(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             trail = Trail(root)
-            assert OnTrail.available() == ['default', 'general', 'geospatial', 'ml']
-            assert OffTrail.available() == ['default']
+            assert OnTrail.preset.name == 'ontrail.txt'
+            assert OffTrail.preset.name == 'offtrail.txt'
             (root / '.offtrail').unlink()
-            with pytest.raises(FileNotFoundError, match="available: \\['default'\\]"):
-                trail.offtrail.txt.create('geospatial')
-            assert not (root / '.offtrail').exists()
-            trail.offtrail.txt.create('default')
+            trail.offtrail.txt.create(OffTrail.preset)
             assert (root / '.offtrail').read_text(encoding='utf-8') == '.*\n'
             assert list(trail.offtrail) == ['.*']
+            assert not trail.offtrail.imported
 
 
 

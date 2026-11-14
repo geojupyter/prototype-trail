@@ -16,8 +16,7 @@ from trail.util import PathLike
 if TYPE_CHECKING:
     from trail.asset import Asset
 
-PRESETS: Final = files('trail') / 'offtrail'
-DEFAULT_PRESET: Final = 'default'
+PRESET: Final = files('trail') / 'offtrail.txt'
 
 
 @cache
@@ -92,12 +91,12 @@ class OffTrail(Rules):
     The rules of `.offtrail`, which exclude paths from automatic tracking before `.ontrail`. A
     path is decided here first: the last rule that matches it decides, and a rule that starts with
     '!' takes the path back. Rules are written as in `.ontrail`. A project without the file gets
-    the default preset, so a deleted file comes back. Empty it to ignore nothing. Calling it removes
-    assets without editing the rules.
+    the preset, so a deleted file comes back. Empty it to ignore nothing. Calling it removes assets
+    without editing the rules.
     """
 
     filename = '.offtrail'
-    presets = PRESETS
+    preset = PRESET
 
     def __call__(self, *paths: PathLike) -> Asset | list[Asset]:
         """
@@ -134,14 +133,14 @@ class OffTrail(Rules):
 
     def default(self) -> None:
         """
-        Copy the default preset to `.offtrail` if the project has no such file. A Trail without a
-        directory holds the default rules in memory.
+        Copy the preset to `.offtrail` if the project has no such file. A Trail without a
+        directory holds the preset's rules in memory.
         """
         if self.txt.path is None:
-            text = (self.presets / f'{DEFAULT_PRESET}.txt').read_text(encoding='utf-8')
+            text = self.preset.read_text(encoding='utf-8')
             self.data[:] = self.txt.rules(text.splitlines())
         else:
-            self.txt.create(DEFAULT_PRESET)
+            self.txt.create(self.preset)
 
     def add(
             self,

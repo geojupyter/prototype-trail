@@ -8,7 +8,7 @@ from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
 from trail import Trail
-from trail.cli.rule_completion import RulePaths
+from trail.cli.rule_completion import Paths, RulePaths
 from trail.dir import build, match
 
 PROJECT = Path('/home/user/project')
@@ -147,6 +147,21 @@ class TestCompletion:
                 )
             }
             assert completions == {'cube.zarr': 'be.zarr', 'data/': 'ta/'}
+
+    def test_a_directory_completes_through_its_slash(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'folder').mkdir()
+            (root / 'file.csv').write_text('a\n', encoding='utf-8')
+            completer = Paths(get_paths=lambda: [str(root)])
+            completions = {
+                completion.text
+                for completion in completer.get_completions(
+                    Document('f'),
+                    CompleteEvent(completion_requested=True),
+                )
+            }
+            assert completions == {'older/', 'ile.csv'}
 
 
 class TestReprs:

@@ -1,8 +1,0 @@
-./
-*.csv
-*.tsv
-*.txt
-*.json
-*.xlsx
-*.xls
-*.parquet
