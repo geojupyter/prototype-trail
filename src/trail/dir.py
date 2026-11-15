@@ -1,158 +1,324 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
-from functools import cached_property
+from collections.abc import Collection, Iterable, Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Self
-from uuid import uuid4
+from typing import TYPE_CHECKING, ClassVar
 
-from trail.entry import Entries, Entry
-from trail.util import PathLike
+from trail import fmt
+from trail.asset import DirAsset
+from trail.entry import Entry, EntryCollection
+from trail.event import AddDirEvent, RemoveDirEvent
+from trail.ontrail import Scopes
+from trail.rule import Rule
+
+if TYPE_CHECKING:
+    from trail.trail import Trail
 
 
+@dataclass(kw_only=True, eq=False, repr=False)
 class Dir(Entry):
     """
-    Represents a directory entry tracked by a Trail.
+    A directory named by `.ontrail`. The log holds its ID and its history. Whether it is a root, and
+    its scopes, are taken from `.ontrail` each time the rules change. A root takes the root scopes
+    at any depth beneath it. Its own scopes are shown relative to it.
 
-    >>> trail.dirs.by_pos[0]
+    >>> trail: Trail
+    >>> project: Path
+    >>> trail.dirs[project / 'data']
     Dir
-        id: 'decbe4d041fa4c1893da693c70ad9105'
-        path: '/tmp/tmpbzh09nb5/folder'
+        id: 3a654b91eb2047b3a2718d7f1d6a03e1
+        path: /tmp/tmpp_bl05lq/data
+        root: False
+        scopes: [
+            ./*.png,
+        ]
     """
-    _parent: Dirs
+    # a Dir is always a directory, as a directory asset is
+    is_directory: ClassVar[bool] = True
+    root: bool = False
+    scopes: Scopes = field(default_factory=Scopes)
 
-    @cached_property
-    def _parent(self) -> Dirs:
-        return self._trail.dirs
+    if TYPE_CHECKING:
+        _parent: Dirs = field(init=False, repr=False)
+
+    def _repr_items(self) -> Iterator[tuple[str, object]]:
+        """
+        Yields the fields a record in the feed shows. The scopes are listed on one line,
+        relative to the Dir.
+        """
+        yield from super()._repr_items()
+        yield 'root', self.root
+        if self.scopes:
+            yield 'scopes', ', '.join(self.scopes.relative)
+
+    def __repr__(self) -> str:
+        """Shows the id, the path, whether the Dir is a root, and its scopes relative to it."""
+        lines = [
+            type(self).__name__,
+            f'    id: {fmt.bare(self.id)}',
+            f'    path: {fmt.bare(str(self.path))}',
+            f'    root: {self.root!r}',
+        ]
+        rendered = fmt.bracketed('scopes', self.scopes.relative, len(self.scopes))
+        lines.extend(rendered)
+        return '\n'.join(lines)
 
     @property
-    def _watch_paths(self) -> tuple[Path, ...]:
-        return tuple(dict.fromkeys((self.path, self.directory)))
+    def is_recursive(self) -> bool:
+        """
+        Whether anything below the directory's own files may be tracked through it. A root is
+        recursive, and so is a Dir with a scope such as `./**/*.tif`.
 
-    # @property
-    # def events(self) -> Events:
-    #     changes = self._trail.changes
-    #     selected = (
-    #         change
-    #         for change in changes
-    #         if change.dir_id == self.id
-    #     )
-    #     return Changes(changes, selected)
-
-    def register(self) -> Self:
-        collection = self._parent
-        if collection is None:
-            raise ValueError("Entry has no Trail; pass trail to from_path")
-        trail = collection._trail
-        if self._trail is not trail:
-            raise ValueError("Entry already belongs to another Trail")
-        if collection is not trail.dirs:
-            raise ValueError("Entry belongs to the wrong collection")
-        path = Path(self.path).expanduser().resolve()
-        if trail._ignored(path):
-            raise ValueError(f"Cannot track Trail metadata: {path}")
-        while self.id in trail.assets.id2entry:
-            self.id = uuid4().hex
-        previous_path = self.path
-        self.path = path
-        watchdog = self._watchdog
-        retained = []
-        try:
-            for watched_path in self._watch_paths:
-                watchdog.watch(watched_path)
-                ids = watchdog.dir2ids.setdefault(watched_path, set())
-                if self.id not in ids:
-                    ids.add(self.id)
-                    retained.append(watched_path)
-        except Exception:
-            for watched_path in reversed(retained):
-                watchdog.release(watched_path, self.id)
-            self.path = previous_path
-            raise
-
-        previous = collection.id2entry.get(self.id)
-        occupant = collection.path2entry.get(path)
-        for old in (previous, occupant):
-            if (
-                old is None
-                or old is self
-                # entries contains fresh entry
-                or collection.id2entry.get(old.id) is not old
-            ):
-                continue
-            if old.id == self.id:
-                for watched_path in old._watch_paths:
-                    if watched_path not in self._watch_paths:
-                        watchdog.release(watched_path, old.id)
-                Entry.unregister(old)
-            else:
-                old.unregister()
-        collection.path2entry[path] = self
-        if self.id not in collection.id2entry:
-            collection.ids.append(self.id)
-        collection.id2entry[self.id] = self
-        return self
-
-    def move(self, destination: PathLike) -> Self:
-        previous_path = self.path
-        super().move(destination)
-        trail = self._trail
-        descendants = (
-            entry
-            for collection in (trail.assets, trail.dirs)
-            for entry in tuple(collection.id2entry.values())
-            if entry is not self and entry.path.is_relative_to(previous_path)
+        >>> self.is_recursive
+        False
+        """
+        return (
+            self.root
+            or self.scopes.is_recursive
         )
-        for entry in descendants:
-            entry.move(self.path / entry.path.relative_to(previous_path))
-        return self
 
-    def walk(self) -> Iterator[Entry]:
-        trail = self._trail
-        pending: list[Entry] = [self]
-        seen: set[Path] = set()
-        while pending:
-            entry = pending.pop()
-            if entry.path in seen:
-                continue
-            seen.add(entry.path)
-            yield entry
-            if not isinstance(entry, Dir) or not entry.path.is_dir():
-                continue
-            for child in entry.path.iterdir():
-                if (
-                    child.is_symlink()
-                    or trail._ignored(child)
-                    or child in trail._unregistered_paths
-                ):
-                    continue
-                if child.is_dir():
-                    collection = trail.dirs
-                else:
-                    collection = trail.assets
-                pending.append(
-                    collection.get(child) or Entry.from_path(child, trail=trail)
-                )
+    def decide(self, path: Path) -> str | None:
+        """
+        Returns the line among the Dir's own scopes that decides a path below it, or None.
+        Case is ignored.
 
-    def unregister(self) -> None:
-        if self._parent.id2entry.get(self.id) is not self:
-            return
-        for path in self._watch_paths:
-            self._watchdog.release(path, self.id)
-        super().unregister()
+        >>> project: Path
+        >>> self.decide(project / 'data' / 'B.PNG')
+        'data/*.png'
+        """
+        return self.scopes.decide(path.relative_to(self.path).as_posix())
 
 
-class Dirs(Entries[Dir]):
+def build(
+        lines: Iterable[str],
+        project: Path,
+        excluded: Collection[Path] = (),
+) -> tuple[dict[Path, Dir], Scopes]:
     """
-    A collection of Dir entries tracked by a Trail.
+    Returns the directories that the rules of `.ontrail` name, in the order they are first named,
+    and the root scopes among the lines.
 
+    These are left out:
+    - Lines that do not parse.
+    - Directories in `excluded`.
+    - Dirassets.
+    - Directories inside a dirasset or an excluded directory. A dirasset's contents are never
+      walked.
+
+    >>> project: Path
+    >>> build(['./', '*.csv', 'data/*.png'], project)[1]
+    Scopes (1)
+        *.csv
+    """
+    # in the order .ontrail first names each directory, so reprs and walks are stable
+    order: dict[Path, None] = {}
+    roots: set[Path] = set()
+    scoped: dict[Path, list[str]] = {}
+    patterns: dict[Path, list[str]] = {}
+    unanchored: list[str] = []
+    for line in lines:
+        try:
+            base, pattern = Rule(line).parse(project)
+        except ValueError:
+            continue
+        if base is None:
+            unanchored.append(line)
+            continue
+        lineage = (base, *base.parents)
+        inside = any(
+            path in excluded
+            or DirAsset.is_match(path)
+            for path in lineage
+        )
+        if inside:
+            continue
+        order[base] = None
+        if pattern:
+            scoped.setdefault(base, []).append(line)
+            patterns.setdefault(base, []).append(pattern)
+        else:
+            roots.add(base)
+    dirs: dict[Path, Dir] = {}
+    for path in order:
+        own = Scopes(scoped.get(path, ()), patterns.get(path, ()))
+        dirs[path] = Dir(path=path, root=path in roots, scopes=own)
+    # a root scope's pattern is its line
+    scopes = Scopes(unanchored, unanchored)
+    return dirs, scopes
+
+
+def match(
+        path: Path,
+        dirs: Mapping[Path, Dir],
+        scopes: Scopes,
+) -> str | None:
+    """
+    Returns the rule of `.ontrail` that decides a path, or None. The dir scopes of the path's
+    parents are checked first, deepest first, as git ranks nested .gitignore files. If none decides,
+    the root scopes are checked beneath the nearest root.
+
+    >>> trail: Trail
+    >>> project: Path
+    >>> dirs = trail.dirs.path2entry
+    >>> scopes = trail.dirs.scopes
+    >>> match(project / 'data' / 'a.png', dirs, scopes)
+    'data/*.png'
+    """
+    root = None
+    for parent in path.parents:
+        directory = dirs.get(parent)
+        if directory is None:
+            continue
+        line = directory.decide(path)
+        if line is not None:
+            return line
+        if (
+            directory.root
+            and root is None
+        ):
+            root = parent
+    if root is None:
+        return None
+    return scopes.decide(path.relative_to(root).as_posix())
+
+
+class Dirs(EntryCollection[Dir]):
+    """
+    The directories `.ontrail` names, by id and by path, plus the root scopes, which apply beneath
+    every root. A subfolder of a root has no Dir of its own, since its ancestor covers it. So this
+    is not the set of watched directories. `refresh` keeps the Dirs in line with `.ontrail` and logs
+    each Dir that comes or goes.
+
+    >>> trail: Trail
     >>> trail.dirs
     Dirs (2)
         0. Dir
-            id: 'decbe4d041fa4c1893da693c70ad9105'
-            path: '/tmp/tmpbzh09nb5/folder'
+            id: 04e15251538241309989553fb4672653
+            path: /tmp/tmpp_bl05lq
+            root: True
+            scopes: []
         1. Dir
-            id: 'f48807577f1d454a9caa6814af452d8e'
-            path: '/tmp/tmpbzh09nb5/folder/nested'
+            id: 3a654b91eb2047b3a2718d7f1d6a03e1
+            path: /tmp/tmpp_bl05lq/data
+            root: False
+            scopes: [
+                ./*.png,
+            ]
     """
+
+    _parent: Trail
     entry_type = Dir
+
+    def __init__(self, parent: Trail | None = None) -> None:
+        """Start with no Dirs and no root scopes. `refresh` takes them from `.ontrail`."""
+        EntryCollection.__init__(self, parent)
+        self.scopes = Scopes()
+
+    def __repr__(self) -> str:
+        """Lists each Dir with its position."""
+        lines = [f'{type(self).__name__} ({len(self)})']
+        for position, directory in enumerate(self):
+            head, *body = repr(directory).splitlines()
+            lines.append(f'    {position}. {head}')
+            lines.extend(
+                f'    {line}'
+                for line in body
+            )
+        return '\n'.join(lines)
+
+    def clear(self) -> None:
+        """Refuses, since the Dirs come from `.ontrail`. `trail.ontrail.remove` removes one."""
+        msg = 'Dirs come from .ontrail, so a Dir goes when its rules are removed from .ontrail'
+        raise TypeError(msg)
+
+    def refresh(self) -> None:
+        """
+        Bring the live Dirs in line with `.ontrail`. A directory that a rule names gets a Dir,
+        logged as an AddDirEvent. A Dir that no line names is removed and logged as a
+        RemoveDirEvent. A Dir that stays keeps its ID and takes its root and scopes from the rules.
+        Directory assets are never Dirs.
+        """
+        trail = self._trail
+        ontrail = trail.ontrail
+        excluded = {
+            asset.path
+            for asset in trail.assets
+            if asset.is_directory
+        }
+        built, self.scopes = build(ontrail, ontrail.project, excluded)
+        for directory in self:
+            if directory.path not in built:
+                self._remove(directory)
+        for path, fresh in built.items():
+            current = self.path2entry.get(path)
+            if current is None:
+                fresh._parent = self
+                self._add(fresh)
+            else:
+                current.root = fresh.root
+                current.scopes = fresh.scopes
+
+    def relog(self) -> None:
+        """
+        Log each live Dir again, keeping its ID. `Events.clear` calls it, since the emptied log
+        no longer holds the events that added the Dirs.
+        """
+        for directory in self:
+            self._add(directory)
+
+    def _add(self, directory: Dir) -> None:
+        """Hold a Dir and log an AddDirEvent for it."""
+        trail = self._trail
+        event = AddDirEvent(
+            src_path=str(directory.path),
+            rule=self._rule(directory.path),
+        )
+        event.entry = directory
+        event.apply(trail)
+        trail.events.append(event)
+
+    def _remove(self, directory: Dir) -> None:
+        """Let go of a Dir and log a RemoveDirEvent for it."""
+        trail = self._trail
+        event = RemoveDirEvent(src_path=str(directory.path))
+        event.apply(trail)
+        trail.events.append(event)
+
+    def _rule(self, path: Path) -> str | None:
+        """Returns the first rule of `.ontrail` that names a directory, or None."""
+        ontrail = self._trail.ontrail
+        project = ontrail.project
+        for line in ontrail:
+            try:
+                base, _ = Rule(line).parse(project)
+            except ValueError:
+                continue
+            if base == path:
+                return line
+        return None
+
+    def match(self, path: Path) -> str | None:
+        """
+        Returns the rule of `.ontrail` that decides a path, or None if none does. See `match`.
+
+        >>> project: Path
+        >>> self.match(project / 'data' / 'b.png')
+        'data/*.png'
+        """
+        return match(path, self.path2entry, self.scopes)
+
+    def tracks(self, path: Path) -> bool:
+        """
+        Whether `.ontrail` says to track the path. It does if a rule other than an exclusion
+        decides it.
+
+        >>> project: Path
+        >>> self.tracks(project / 'notes.md')
+        False
+        """
+        line = self.match(path)
+        return (
+            line is not None
+            and not line.startswith('!')
+        )

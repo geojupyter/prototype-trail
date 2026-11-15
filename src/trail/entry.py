@@ -1,20 +1,20 @@
 from __future__ import annotations
 
 import os
-from collections.abc import ItemsView, Iterable, Iterator
-from dataclasses import dataclass, field, fields
+from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from stat import S_ISDIR, S_ISREG
-from typing import TYPE_CHECKING, Self, overload
+from typing import TYPE_CHECKING, ClassVar, Self, overload
 from uuid import uuid4
 
+from trail import fmt
+from trail.collection import Collection
 from trail.node import Node
-from trail.util import ByPos, PathLike, items_repr, normalize_id
+from trail.util import PathLike, normalize_id
 
 if TYPE_CHECKING:
     from trail.event import Event
-    from trail.trail import Trail
 
 # an entry is addressed by its hexadecimal ID or by its path
 EntryKey = PathLike
@@ -22,72 +22,41 @@ EntryKey = PathLike
 
 @dataclass(kw_only=True, eq=False, repr=False)
 class Entry(Node):
-    """Represents a file system entry (file or directory) tracked by a Trail."""
+    """
+    Anything the log holds an ID for: a file or directory asset, or a Dir. It belongs to one
+    collection, `trail.assets` or `trail.dirs`.
+    """
+    # properties a listing offers as completions, besides the dataclass fields
+    selectable: ClassVar[tuple[str, ...]] = (
+        'name',
+        'directory',
+    )
+
     id: str = field(default_factory=lambda: uuid4().hex)
     path: Path
 
     if TYPE_CHECKING:
-        _parent: Entries[Self]
+        _parent: EntryCollection[Self] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
+        """Normalize the id and resolve the path."""
         Node.__init__(self)
         self.id = normalize_id(self.id)
         self.path = Path(self.path).expanduser().resolve()
 
     def _repr_items(self) -> Iterator[tuple[str, object]]:
-        for entry_field in fields(self):
-            if not entry_field.repr:
-                continue
-            value = getattr(self, entry_field.name)
-            if entry_field.name == 'path':
-                value = str(value)
-            yield entry_field.name, value
+        """Yields the fields a repr shows, starting with the id and the path."""
+        yield 'id', self.id
+        yield 'path', str(self.path)
 
     def __repr__(self) -> str:
+        """Shows the class name, then each field on its own line."""
         lines = [type(self).__name__]
         lines.extend(
-            f'    {name}: {value!r}'
+            f'    {name}: {fmt.bare(value)}'
             for name, value in self._repr_items()
         )
         return '\n'.join(lines)
-
-    @classmethod
-    def from_path(
-        cls,
-        path: PathLike,
-        trail: Trail | None = None,
-    ) -> Self:
-        from trail.asset import Asset
-        from trail.dir import Dir
-
-        path = Path(path).expanduser().resolve()
-        metadata = path.stat()
-
-        if trail is not None and trail._ignored(path):
-            raise ValueError(f"Cannot track Trail metadata: {path}")
-
-        if issubclass(cls, Dir):
-            if not S_ISDIR(metadata.st_mode):
-                raise ValueError(f"Not a directory: {path}")
-        elif issubclass(cls, Asset):
-            if not S_ISREG(metadata.st_mode):
-                raise ValueError(f"Not a regular file: {path}")
-        else:
-            if S_ISDIR(metadata.st_mode):
-                cls = Dir
-            elif S_ISREG(metadata.st_mode):
-                cls = Asset
-            else:
-                raise ValueError(f"Not a regular file or directory: {path}")
-
-        out = cls(path=path)
-        out._trail = trail
-        if trail is not None:
-            if isinstance(out, Dir):
-                out._parent = trail.dirs
-            else:
-                out._parent = trail.assets
-        return out
 
     @property
     def name(self) -> str:
@@ -100,133 +69,80 @@ class Entry(Node):
         return self.path.parent
 
     @cached_property
-    def size(self) -> int:
-        """Size of the entry, in bytes."""
-        return self.path.stat().st_size
-
-    @cached_property
-    def mtime(self) -> float:
-        """Last modification time of the entry, in seconds since the epoch."""
-        return self.path.stat().st_mtime
-
-    @cached_property
     def events(self) -> dict[str, Event]:
         """Events associated with the entry."""
         return {}
 
-    @property
-    def _watch_paths(self) -> tuple[Path, ...]:
-        raise NotImplementedError
-
-    def walk(self) -> Iterator[Entry]:
-        yield self
-
-    def register(self) -> Self:
-        raise NotImplementedError
-
-    def move(self, destination: PathLike) -> Self:
+    def _register(self) -> Self:
         """
-        Repoint a tracked entry at `destination`, keeping its ID and its position in the
-        collection, so that renaming a resource outside the process does not fork its identity.
+        Hold the entry in its collection and return it. Nothing is logged. An older copy with
+        the same id, or another entry at the same path, is removed first.
         """
         collection = self._parent
-        destination = Path(destination).expanduser().resolve()
-        if destination == self.path:
-            return self
-        trail = self._trail
-        if trail._ignored(destination):
-            raise ValueError(f"Cannot track Trail metadata: {destination}")
-        watchdog = self._watchdog
-        previous_path = self.path
-        previous_watches = self._watch_paths
-        self.path = destination
-        retained = []
-        try:
-            for watched_path in self._watch_paths:
-                watchdog.watch(watched_path)
-                ids = watchdog.dir2ids.setdefault(watched_path, set())
-                if self.id not in ids:
-                    ids.add(self.id)
-                    retained.append(watched_path)
-        except Exception:
-            for watched_path in reversed(retained):
-                watchdog.release(watched_path, self.id)
-            self.path = previous_path
-            raise
-        for watched_path in previous_watches:
-            if watched_path not in self._watch_paths:
-                watchdog.release(watched_path, self.id)
-        if collection.path2entry.get(previous_path) is self:
-            del collection.path2entry[previous_path]
-        occupant = collection.path2entry.get(destination)
-        if (
-            occupant is not None
-            and occupant is not self
-        ):
-            occupant.unregister()
-        collection.path2entry[destination] = self
-        if self.id not in collection.id2entry:
-            collection.ids.append(self.id)
-            collection.id2entry[self.id] = self
+        if collection is None:
+            raise ValueError(f"{type(self).__name__} has no Trail")
+        trail = collection._trail
+        if self._trail is not trail:
+            raise ValueError(f"{type(self).__name__} already belongs to another Trail")
+        if trail.entries.is_metadata(self.path):
+            raise ValueError(f"Cannot track Trail metadata: {self.path}")
+        previous = collection.id2entry.get(self.id)
+        # a path holds one entry of each kind
+        occupant = collection.path2entry.get(self.path)
+        for old in (previous, occupant):
+            if (
+                old is None
+                or old is self
+            ):
+                continue
+            old._unregister()
+        collection[self.id] = self
         return self
 
-    def unregister(self) -> None:
-        """Unregister the entry from the tracked Entries collection."""
+    def _unregister(self) -> None:
+        """Remove the entry from the collection holding it. Nothing is logged."""
         collection = self._parent
-        if collection is None or collection.id2entry.get(self.id) is not self:
+        if (
+            collection is None
+            or collection.id2entry.get(self.id) is not self
+        ):
             return
-        del collection.id2entry[self.id]
-        collection.ids.remove(self.id)
-        if collection.path2entry.get(self.path) is self:
-            del collection.path2entry[self.path]
+        del collection[self.id]
 
 
-class Entries[E: Entry](Node):
+class EntryCollection[E: Entry](Collection[EntryKey, E]):
     """
-    A collection of Entry objects (Asset or Dir) tracked by a Trail.
-
-    >>> trail.entries
-    Entries (4)
-        0. Asset
-            id: '41d3f259a5fc4c1fa13c516cf892f56e'
-            path: '/tmp/tmpbzh09nb5/folder/new.csv'
-        1. Asset
-            id: '6e564e209ff44bafa32cf75d9ffcd844'
-            path: '/tmp/tmpbzh09nb5/folder/nested/nested.csv'
-        2. Dir
-            id: 'decbe4d041fa4c1893da693c70ad9105'
-            path: '/tmp/tmpbzh09nb5/folder'
-        3. Dir
-            id: 'f48807577f1d454a9caa6814af452d8e'
-            path: '/tmp/tmpbzh09nb5/folder/nested'
+    Entries of one kind by id and by path, in the order they were added. `Assets` and `Dirs` are
+    the two kinds. `trail.entries` looks up both at once.
     """
-    _parent: Trail
-    entry_type: type[E]
 
-    def __init__(self, parent: Trail | None = None) -> None:
-        Node.__init__(self, parent)
-        self.ids: list[str] = []
+    # the class of what the collection holds
+    entry_type: ClassVar[type[Entry]] = Entry
 
-    @cached_property
-    def by_pos(self) -> ByPos[E]:
-        return ByPos(self)
-
-    def __repr__(self) -> str:
-        return items_repr(
-            type(self).__name__,
-            (
-                self[identifier]
-                for identifier in self.ids
-            ),
-        )
+    @property
+    def types(self) -> list[type[Entry]]:
+        """Returns `entry_type` and its subclasses at any depth."""
+        out = [self.entry_type]
+        # the list grows as it is walked, so each subclass is walked in turn
+        for type_ in out:
+            out.extend(type_.__subclasses__())
+        return out
 
     @cached_property
     def path2entry(self) -> dict[Path, E]:
-        return {}
+        """
+        Maps each path to its entry. It is built from `data`, not stored separately, so a selection
+        builds its own.
+        """
+        return {
+            entry.path: entry
+            for entry in self.data.values()
+        }
 
-    @cached_property
+    @property
     def id2entry(self) -> dict[str, E]:
-        return {}
+        """Maps each id to its entry. This is `data` itself."""
+        return self.data
 
     @overload
     def __getitem__(self, key: EntryKey) -> E: ...
@@ -235,9 +151,13 @@ class Entries[E: Entry](Node):
     def __getitem__(self, key: Iterable[EntryKey]) -> tuple[E, ...]: ...
 
     def __getitem__(
-        self,
-        key: EntryKey | Iterable[EntryKey],
+            self,
+            key: EntryKey | Iterable[EntryKey],
     ) -> E | tuple[E, ...]:
+        """
+        Returns the entry with an id or at a path. Several keys return a tuple. Raises KeyError
+        for a key that is neither.
+        """
         if isinstance(key, str) and key in self.id2entry:
             return self.id2entry[key]
         if isinstance(key, (str, os.PathLike)):
@@ -245,80 +165,48 @@ class Entries[E: Entry](Node):
         selected = []
         for value in key:
             if not isinstance(value, (str, os.PathLike)):
-                raise TypeError("Expected a path or entry ID")
+                raise TypeError("Expected a path or an ID")
             selected.append(self[value])
         return tuple(selected)
 
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.id2entry)
+    def __setitem__(
+            self,
+            key: str,
+            value: E,
+    ) -> None:
+        """Hold an entry under its id and its path. The key must be the entry's id."""
+        entry_type = self.entry_type
+        if not isinstance(value, entry_type):
+            raise TypeError(f"Expected {entry_type.__name__}, got {type(value).__name__}")
+        if key != value.id:
+            raise ValueError(f"{entry_type.__name__} ID does not match its key: {key}")
+        if key not in self.id2entry:
+            self.ids.append(key)
+        self.id2entry[key] = value
+        self.path2entry[value.path] = value
 
-    def __len__(self) -> int:
-        return len(self.id2entry)
+    def __delitem__(self, key: EntryKey) -> None:
+        """Remove an entry without logging it. Each kind has its own event for that."""
+        entry = self[key]
+        del self.id2entry[entry.id]
+        self.ids.remove(entry.id)
+        if self.path2entry.get(entry.path) is entry:
+            del self.path2entry[entry.path]
 
-    def __contains__(self, key: EntryKey) -> bool:
+    def repath(
+            self,
+            entry: E,
+            previous: Path,
+    ) -> None:
+        """Move an entry from its previous path to its current one in `path2entry`."""
+        if self.path2entry.get(previous) is entry:
+            del self.path2entry[previous]
+        self[entry.id] = entry
+
+    def __contains__(self, key: EntryKey | E) -> bool:
+        """Whether an entry, an id or a path is held."""
+        if isinstance(key, Entry):
+            return key.id in self.id2entry
         if isinstance(key, str) and key in self.id2entry:
             return True
         return Path(key).expanduser().resolve() in self.path2entry
-
-    @overload
-    def get(self, key: EntryKey) -> E | None: ...
-
-    @overload
-    def get[D](
-        self,
-        key: EntryKey,
-        default: D,
-    ) -> E | D: ...
-
-    def get[D](
-        self,
-        key: EntryKey,
-        default: D | None = None,
-    ) -> E | D | None:
-        try:
-            return self[key]
-        except KeyError:
-            return default
-
-    def items(self) -> ItemsView[str, E]:
-        return self.id2entry.items()
-
-    def clear(self) -> None:
-        """
-        Unregister everything the collection holds. The removals are recorded like any other, so
-        that a cleared collection stays cleared rather than coming back with the log's replay.
-        """
-        paths = tuple(
-            self.id2entry[identifier].path
-            for identifier in self.ids
-        )
-        if not paths:
-            return
-        self._trail.unregister(*paths)
-
-    def entry(self, *paths: PathLike) -> tuple[E, ...]:
-        selected: dict[Path, E] = {}
-        for path in paths:
-            resolved = Path(path).expanduser().resolve()
-            if resolved not in selected:
-                selected[resolved] = self.get(resolved) or self.entry_type.from_path(
-                    resolved, trail=self._trail
-                )
-        registered = []
-        try:
-            for entry in selected.values():
-                if self.id2entry.get(entry.id) is entry:
-                    entry.register()
-                    continue
-                while (
-                    entry.id in self._trail.assets
-                    or entry.id in self._trail.dirs
-                ):
-                    entry.id = uuid4().hex
-                entry.register()
-                registered.append(entry)
-        except Exception:
-            for entry in reversed(registered):
-                entry.unregister()
-            raise
-        return tuple(selected.values())

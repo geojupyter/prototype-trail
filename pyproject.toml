@@ -5,7 +5,8 @@ description = "Add your description here"
 requires-python = ">=3.12"
 dependencies = [
     "ipykernel>=7.3.0",
-    "prompt_toolkit>=3.0",
+    "pathspec>=0.12",
+    "prompt_toolkit>=3.0.52",
     "watchdog>=6.0",
 ]
 authors = [
@@ -20,16 +21,24 @@ maintainers = [
 [project.scripts]
 trail = "trail.cli:main"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 where = ["src"]
+namespaces = false
 include = [
     "trail",
     "trail.*",
 ]
 
+[tool.setuptools.package-data]
+trail = ["ontrail/*.txt", "offtrail/*.txt"]
+
 [dependency-groups]
 dev = [
     "pre-commit>=4.6.2",
+    "pytest>=9.1",
     "ruff>=0.16.8",
 ]
 
