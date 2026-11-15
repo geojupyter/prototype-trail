@@ -14,20 +14,28 @@ from trail.rule import Rule
 
 
 class TestRuleParse:
-    project = Path('/home/user/project')
+    project = Path('/home/user/project').resolve()
 
     def test_roots(self) -> None:
+        home = (
+            Path.home()
+            .resolve()
+        )
         project = self.project
         assert Rule('./').parse(project) == (project, '')
         assert Rule('data/').parse(project) == (project / 'data', '')
         assert Rule('/mnt/data/').parse(project) == (Path('/mnt/data'), '')
-        assert Rule('~/Downloads/').parse(project) == (Path.home() / 'Downloads', '')
+        assert Rule('~/Downloads/').parse(project) == (home / 'Downloads', '')
 
     def test_root_scopes(self) -> None:
         for line in ('*.csv', '!requirements*.txt', 'Makefile'):
             assert Rule(line).parse(self.project) == (None, line)
 
     def test_dir_scopes_belong_to_the_directory_before_the_first_wildcard(self) -> None:
+        home = (
+            Path.home()
+            .resolve()
+        )
         project = self.project
         assert Rule('data/*.png').parse(project) == (project / 'data', '/*.png')
         assert Rule('./a.csv').parse(project) == (project, '/a.csv')
@@ -37,7 +45,7 @@ class TestRuleParse:
         assert Rule('/mnt/data/**/*.tif').parse(project) == (Path('/mnt/data'), '/**/*.tif')
         assert Rule('../dir/*.png').parse(project) == (project.parent / 'dir', '/*.png')
         assert Rule('~/Downloads/prefix_*.png').parse(project) == (
-            Path.home() / 'Downloads',
+            home / 'Downloads',
             '/prefix_*.png',
         )
 
@@ -167,6 +175,29 @@ class TestRuleCanonicalization:
             )
             assert Rule('~/Downloads/').canonicalize(project, project) == '~/Downloads/'
             assert Rule('/mnt/data/*.tif').canonicalize(project, project) == '/mnt/data/*.tif'
+
+    def test_home_paths_use_the_resolved_home_directory(
+            self,
+            tmp_path: Path,
+            monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        root = tmp_path.resolve()
+        project = root / 'project'
+        project.mkdir()
+        home = root / 'home'
+        home.mkdir()
+        alias = root / 'home-alias'
+        try:
+            alias.symlink_to(home, target_is_directory=True)
+        except OSError as error:
+            pytest.skip(f'Directory symlinks are unavailable: {error}')
+
+        monkeypatch.setenv('HOME', str(alias))
+        monkeypatch.setenv('USERPROFILE', str(alias))
+        rule = Rule(str(home / 'Downloads' / '*.png'))
+        assert rule.canonicalize(project, project) == '~/Downloads/*.png'
+        assert Rule('~/Downloads/').canonicalize(project, project) == '~/Downloads/'
+        assert Rule('~/Downloads/').parse(project) == (home / 'Downloads', '')
 
     def test_a_single_word_is_a_path_if_one_exists(self) -> None:
         with self.project() as (project, _):
