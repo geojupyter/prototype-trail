@@ -316,7 +316,10 @@ class Rule(str):
             if not alone:
                 line = f'./{line}'
             return line
-        home = Path.home()
+        home = (
+            Path.home()
+            .resolve()
+        )
         if base.is_relative_to(home):
             line = '/'.join(['~', *base.relative_to(home).parts, *rest])
         else:

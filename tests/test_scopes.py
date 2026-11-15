@@ -11,7 +11,7 @@ from trail import Trail
 from trail.cli.rule_completion import RulePaths
 from trail.dir import build, match
 
-PROJECT = Path('/home/user/project')
+PROJECT = Path('/home/user/project').resolve()
 
 
 def decide(
@@ -67,14 +67,18 @@ class TestMatching:
 
     def test_a_home_scope_is_anchored(self) -> None:
         lines = ['~/Downloads/prefix_*.png']
-        downloads = Path.home() / 'Downloads'
+        home = (
+            Path.home()
+            .resolve()
+        )
+        downloads = home / 'Downloads'
         assert tracks(lines, downloads / 'prefix_a.png')
         assert not tracks(lines, downloads / 'sub' / 'prefix_b.png')
 
     def test_a_dir_outside_the_project(self) -> None:
         lines = ['../dir/*.png']
-        assert list(build(lines, PROJECT)[0]) == [Path('/home/user/dir')]
-        assert tracks(lines, Path('/home/user/dir/a.png'))
+        assert list(build(lines, PROJECT)[0]) == [PROJECT.parent / 'dir']
+        assert tracks(lines, PROJECT.parent / 'dir' / 'a.png')
         assert not tracks(lines, PROJECT / 'a.png')
 
     def test_case_is_ignored_on_both_sides(self) -> None:
