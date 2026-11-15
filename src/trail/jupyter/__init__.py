@@ -16,7 +16,6 @@ from trail.jupyter.event import (
     ViewportV1Event,
 )
 from trail.jupyter.jupyter import Jupyter
-from trail.jupyter.metadata import JGISMetadata, QGISMetadata
 from trail.jupyter.source import Inline, Source
 
 __all__ = [
@@ -25,7 +24,6 @@ __all__ = [
     'DocumentV1Event',
     'ExecutionEvent',
     'Inline',
-    'JGISMetadata',
     'Jupyter',
     'JupyterEvent',
     'KernelSessionEvent',
@@ -34,7 +32,6 @@ __all__ = [
     'ModeEvent',
     'ModeV1Event',
     'PageEvent',
-    'QGISMetadata',
     'Source',
     'SourceEvent',
     'SourceV1Event',

@@ -1,5 +1,7 @@
 # Setup
 
+Use Bash or Zsh on macOS/Linux, or PowerShell on Windows. Commands are the same unless separate blocks are shown.
+
 Run every command in the folder you keep projects in. The setup puts three folders there:
 
 ```
@@ -11,7 +13,7 @@ projects/
 
 ## Get Micromamba
 
-The tutorials use [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html) to manage the environment. Any conda-compatible manager works with the same packages. Install it, then create the environment:
+The tutorials use [micromamba](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html) to manage the environment. Any conda-compatible manager works with the same packages. Follow the installation and shell initialization instructions for your operating system, reopen the terminal, then create the environment:
 
 ```bash
 micromamba create -y -n trail -c conda-forge pip "python=3.13.*" "nodejs=24" pnpm qgis
@@ -28,9 +30,24 @@ micromamba activate trail
 ## Get Trail
 
 ```bash
-git clone -b hodczak-prototype https://github.com/geojupyter/prototype-trail.git trail
-pip install -e ./trail
+git clone -b stable https://github.com/geojupyter/prototype-trail.git trail
+python -m pip install -e ./trail
+```
+
+Copy the sample assets, then add the guides and notebooks:
+
+**macOS / Linux**
+
+```bash
 cp -r trail/tutorials/project trail-tutorial
+cp trail/tutorials/*.md trail/tutorials/*.ipynb trail-tutorial/
+```
+
+**Windows (PowerShell)**
+
+```powershell
+Copy-Item -Recurse trail/tutorials/project trail-tutorial
+Copy-Item -Path trail/tutorials/*.md, trail/tutorials/*.ipynb -Destination trail-tutorial
 ```
 
 ## Get JupyterGIS
@@ -38,7 +55,7 @@ cp -r trail/tutorials/project trail-tutorial
 JupyterGIS with the event feed is not released, so this builds it from source:
 
 ```bash
-git clone -b hodczak-prototype https://github.com/hodczak/prototype-jupytergis-eventfeed.git eventfeed
+git clone -b stable https://github.com/hodczak/prototype-jupytergis-eventfeed.git eventfeed
 cd eventfeed
 python scripts/dev-install.py
 cd ..
@@ -62,16 +79,22 @@ cd trail-tutorial
 trail
 ```
 
-Trail is ready when its header shows `jupyter 1/1`.
-
-## Stop
-
-Enter `quit` in Trail. Press Ctrl+C twice in the JupyterLab terminal.
+The header's `jupyter 1` indicates one active Jupyter event subscription. Open the copied notebooks in JupyterLab.
 
 ## Start over
 
 Stop Trail and JupyterLab, delete `trail-tutorial`, then copy it again:
 
+**macOS / Linux**
+
 ```bash
 cp -r trail/tutorials/project trail-tutorial
+cp trail/tutorials/*.md trail/tutorials/*.ipynb trail-tutorial/
+```
+
+**Windows (PowerShell)**
+
+```powershell
+Copy-Item -Recurse trail/tutorials/project trail-tutorial
+Copy-Item -Path trail/tutorials/*.md, trail/tutorials/*.ipynb -Destination trail-tutorial
 ```

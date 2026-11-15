@@ -29,6 +29,8 @@
 *.jgis
 *.joblib
 *.jp2
+*.jpeg
+*.jpg
 *.json
 *.jsonl
 *.keras
@@ -53,6 +55,7 @@
 *.pickle
 *.pkl
 *.pmtiles
+*.png
 *.pt
 *.pth
 *.qgs
@@ -75,4 +78,6 @@
 *.vrt
 *.xls
 *.xlsx
+*.yaml
+*.yml
 *.zarr

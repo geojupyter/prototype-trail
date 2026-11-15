@@ -1,4 +1,3 @@
-defusedxml>=0.7
 jupyter-core>=5
 pathspec
 psutil>=5.9

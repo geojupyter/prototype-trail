@@ -25,7 +25,6 @@ from trail.event import (
     AddAssetEvent,
     Event,
     FileAccessEvent,
-    MetadataEvent,
     RemoveAssetEvent,
     WatchdogEvent,
 )
@@ -282,29 +281,6 @@ class TestFolds:
             assert [event.timestamp.timestamp() for event in folded] == pytest.approx(
                 [T0, T0 + settle + 0.5],
             )
-
-    def test_a_reopened_trail_compares_with_a_logged_metadata_record(self) -> None:
-        # a MetadataEvent can be a file's last record. It keeps the mtime in nanoseconds
-        with workspace() as (root, trail):
-            path = track(trail, root / 'a.csv')
-            stat = path.stat()
-            event = MetadataEvent(
-                src_path=str(path),
-                format='csv',
-                basis='startup',
-                st_size=stat.st_size,
-                st_mtime_ns=stat.st_mtime_ns,
-            )
-            event.entry = trail.assets[path]
-            event.apply(trail)
-            reopened = Trail(root)
-            name = str(path)
-            feed(reopened, [
-                (0.0, FileOpenedEvent(name)),
-                (0.1, FileClosedEvent(name)),
-            ])
-            # the close changed nothing, so it is a read
-            assert logged(reopened)[-1].event_type == 'opened'
 
     def test_a_deletion_logs_the_open_session_first(self) -> None:
         with workspace() as (root, trail):

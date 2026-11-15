@@ -112,9 +112,6 @@ class TestDirectoryAccessEvent:
                 'is_synthetic': True,
                 'started': event.started.isoformat(),
                 'count': {'opened': 1, 'created': 0, 'modified': 72, 'moved': 0, 'deleted': 0},
-                'format': '',
-                'changes': [],
-                'more': 0,
                 'cls': 'DirectoryAccessEvent',
                 'entry': asset.id,
                 'entry_type': 'DirAsset',
@@ -485,10 +482,7 @@ class TestAccessesWatched:
                     access.entry
                     for access in self.accesses(trail, previous)
                 ]
-                # the zarr store's access waits for its metadata to be read, so the two can be
-                # logged in either order
-                assert sorted(entries, key=assets.index) == assets
-                assert len(entries) == 2
+                assert entries == assets
 
             asyncio.run(run())
 

@@ -1,0 +1,4 @@
+{"type": "FeatureCollection", "features": [
+ {"type": "Feature", "properties": {"name": "Main & 1st", "signal": true}, "geometry": {"type": "Point", "coordinates": [-122.27, 37.87]}},
+ {"type": "Feature", "properties": {"name": "Main & 2nd", "signal": false}, "geometry": {"type": "Point", "coordinates": [-122.26, 37.87]}}
+]}

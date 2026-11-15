@@ -16,7 +16,6 @@ from trail.event import (
     AddDirEvent,
     Event,
     InitTrailEvent,
-    MetadataEvent,
     RemoveAssetEvent,
     RemoveDirEvent,
     WatchdogEvent,
@@ -224,11 +223,7 @@ class Renderer(Node):
                 server.state == 'subscribed'
                 for server in servers.values()
             )
-            expected = sum(
-                server.state in ('connecting', 'subscribed', 'retrying', 'refused', 'error')
-                for server in servers.values()
-            )
-            counts += f'  jupyter {subscribed}/{expected}'
+            counts += f'  jupyter {subscribed}'
         row.append(("class:header.counts", counts))
         return row
 
@@ -264,7 +259,6 @@ class Renderer(Node):
         - AddDirEvent is `watched`.
         - RemoveDirEvent is `unwatched`.
         - WatchdogEvent uses its `event_type`. This includes an access to a dirasset.
-        - MetadataEvent is `changed`.
         - InitTrailEvent is `initialized`.
         - Any other event is named after its class.
         """
@@ -284,8 +278,6 @@ class Renderer(Node):
         if isinstance(event, JupyterEvent):
             out = event.verb or 'event'
             return out
-        if isinstance(event, MetadataEvent):
-            return "changed"
         if isinstance(event, InitTrailEvent):
             return "initialized"
         out = (

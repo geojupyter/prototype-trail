@@ -35,10 +35,7 @@ from watchdog.events import (
 from watchdog.observers import Observer
 
 from trail.asset import Asset, DirAsset
-from trail.event import OPS, DirectoryAccessEvent, FileAccessEvent, MetadataEvent, WatchdogEvent
-from trail.metadata import Metadata
-from trail.metadata.geospatial import sibling_shp
-from trail.metadata.reads import Reads
+from trail.event import OPS, DirectoryAccessEvent, FileAccessEvent, WatchdogEvent
 from trail.node import Node
 from trail.offtrail import decide as offtrail_decision
 
@@ -72,6 +69,19 @@ EVENT_FILTER: Final = [
 # the file events folded into a session. A move or a deletion stays one event
 FOLDED: Final = frozenset({'created', 'modified', 'opened', 'closed', 'closed_no_write'})
 CLOSES: Final = frozenset({'closed', 'closed_no_write'})
+# the files that make one shapefile with its .shp, by suffix
+SHAPEFILE_PARTS: Final = ('.shx', '.dbf', '.prj', '.cpg', '.qix', '.sbn', '.sbx')
+
+
+def sibling_shp(path: Path) -> Path | None:
+    """The .shp a shapefile part belongs to, matched by its stem in any case, or None."""
+    if path.suffix.lower() not in SHAPEFILE_PARTS:
+        return None
+    for candidate in (path.with_suffix('.shp'), path.with_suffix('.SHP')):
+        if candidate.exists():
+            return candidate
+    out = path.with_suffix('.shp')
+    return out
 
 
 def enclosing(
@@ -459,12 +469,6 @@ class Handler(FileSystemEventHandler):
             # queued ahead of the event that ends it, however far behind the loop is
             session.accesses.close_within(source)
         at = time.time()
-        # Trail's own metadata read of a file is not an access
-        if (
-            event.event_type in ('opened', 'closed_no_write')
-            and session.reads.is_own(source, at, at)
-        ):
-            return
         if self.count(event, source, destination, at, seen):
             return
         arrival = Arrival(at=at, event=event)
@@ -703,8 +707,6 @@ class WatchdogSession(Session):
     folds: dict[str, Fold]
     # the last size and mtime recorded for each file asset, by id
     stats: dict[str, tuple[int | None, float | None]]
-    # the metadata reads that follow a write
-    reads: Reads
     consumer: asyncio.Task[None] | None
     # a forked child inherits the run but none of its threads
     pid: int
@@ -743,7 +745,6 @@ class WatchdogSession(Session):
         self.accesses = Accesses(self)
         self.folds = {}
         self.stats = {}
-        self.reads = Reads(self)
         self.consumer = None
         self.pid = os.getpid()
         self.hook = None
@@ -795,7 +796,6 @@ class WatchdogSession(Session):
             self.prepare(loop)
             self.open()
             self.place_watches()
-            self.load_baselines()
         except BaseException:
             self.close()
             self._trail.lock.release(self)
@@ -818,27 +818,6 @@ class WatchdogSession(Session):
             return
         if self._parent.desired():
             self.start()
-
-    def load_baselines(self) -> None:
-        """
-        Check each asset against the baseline the last run kept, after the watches are placed. An
-        asset with no reader only needs a stat, which opens nothing, so it is checked now. An
-        asset with a reader is read in the background, behind any asset that changes, if it has
-        no baseline or its stat changed.
-        """
-        readable = []
-        assets = list(self._trail.assets)
-        with (
-            self._trail.baselines.batch(),
-            self.reads.own(assets),
-        ):
-            for asset in assets:
-                metadata = asset.metadata
-                if type(metadata) is Metadata:
-                    metadata.observe('startup')
-                elif metadata.is_stale():
-                    readable.append(asset)
-        self.reads.load(readable)
 
     def place_watches(self) -> None:
         """Publish what the handler reads, then make the watches the ones `desired` names."""
@@ -931,8 +910,6 @@ class WatchdogSession(Session):
         self.put(STOP)
         try:
             await consumer
-            # the reads that the last write sessions asked for
-            await self.reads.drain()
         finally:
             self.close()
 
@@ -946,7 +923,6 @@ class WatchdogSession(Session):
             return
         if self.hook is not None:
             atexit.unregister(self.hook)
-        self.reads.close()
         self.halt()
         consumer = self.consumer
         if (
@@ -958,7 +934,6 @@ class WatchdogSession(Session):
                 consumer.cancel()
         try:
             self.record_open()
-            self._trail.baselines.save()
         finally:
             self.is_started = False
             self._trail.lock.release(self)
@@ -1037,8 +1012,6 @@ class WatchdogSession(Session):
                 continue
             event = self.arrival2event(item)
             if event.is_directory:
-                # an access closed by this deletion or move is logged before it
-                self.flush_within(event.src_path)
                 key = (event.event_type, event.src_path, event.dest_path)
                 if key not in seen:
                     seen.add(key)
@@ -1049,11 +1022,6 @@ class WatchdogSession(Session):
             entry = event.apply(trail)
             if entry is not None:
                 moved |= event.event_type == "moved"
-                if (
-                    event.event_type == "moved"
-                    and isinstance(entry, Asset)
-                ):
-                    self.reads.add(entry)
                 continue
             # a file appearing that is not tracked is tracked if .ontrail takes it
             if event.event_type in ("created", "moved"):
@@ -1085,14 +1053,14 @@ class WatchdogSession(Session):
         event_type = event.event_type
         source = Path(event.src_path).resolve()
         if event_type in ('moved', 'deleted'):
-            self.end_write(source)
+            self.end_fold(str(source))
             if (
                 event_type != 'moved'
                 or not event.dest_path
             ):
                 return False
             destination = Path(event.dest_path).resolve()
-            self.end_write(destination)
+            self.end_fold(str(destination))
             replaced = trail.assets.get(destination)
             if (
                 trail.assets.get(source) is None
@@ -1156,26 +1124,6 @@ class WatchdogSession(Session):
         ):
             return shp
         return None
-
-    def flush_within(self, path: str) -> None:
-        """Log the writes waiting for a read on assets at or below a directory."""
-        trail = self._trail
-        root = Path(path)
-        for identifier in [*self.reads.taken, *self.reads.writes]:
-            asset = trail.assets.id2entry.get(identifier)
-            if (
-                asset is None
-                or asset.path == root
-                or asset.path.is_relative_to(root)
-            ):
-                self.reads.flush(identifier)
-
-    def end_write(self, path: Path) -> None:
-        """Log a path's open session, and its write still waiting for a read, before a move or deletion."""
-        self.end_fold(str(path))
-        asset = self._trail.assets.get(path)
-        if asset is not None:
-            self.reads.flush(asset.id)
 
     def add_fold(
             self,
@@ -1257,32 +1205,14 @@ class WatchdogSession(Session):
         )
         event.entry = asset
         self.stats[asset.id] = (st_size, st_mtime)
-        is_write = event.event_type in ('created', 'modified')
         for observer in self._parent.observers:
             if observer(event):
-                # the observer logs the write. Its read still follows, as a MetadataEvent
-                if is_write:
-                    self.reads.add(asset, is_immediate=True)
                 return event
-        if (
-            is_write
-            and type(asset.metadata) is not Metadata
-        ):
-            # the session waited for the writer to finish, so the summary is read now, and the
-            # write is logged with what changed
-            self.reads.add(asset, is_immediate=True, write=event)
-            return event
         event.apply(trail)
-        if is_write:
-            # a file with no reader is only stat'ed, to keep its baseline current
-            self.reads.add(asset, is_immediate=True)
         return event
 
     def last_stat(self, asset: Asset) -> tuple[int | None, float | None] | None:
-        """
-        The size and mtime last recorded for a file asset, or None if none was. A MetadataEvent
-        keeps the mtime in nanoseconds. It is converted as `os.stat` converts it.
-        """
+        """The size and mtime last recorded for a file asset, or None if none was."""
         stat = self.stats.get(asset.id)
         if stat is not None:
             return stat
@@ -1294,14 +1224,7 @@ class WatchdogSession(Session):
                 or getattr(event, 'st_size', None) is None
             ):
                 continue
-            if not isinstance(event, MetadataEvent):
-                out = (event.st_size, event.st_mtime)
-                return out
-            if event.st_mtime_ns is None:
-                out = (event.st_size, None)
-                return out
-            seconds, nanoseconds = divmod(event.st_mtime_ns, 10**9)
-            out = (event.st_size, seconds + nanoseconds * 1e-9)
+            out = (event.st_size, event.st_mtime)
             return out
         return None
 
@@ -1315,13 +1238,6 @@ class WatchdogSession(Session):
         if not isinstance(asset, DirAsset):
             return None
         event = access.to_event(asset)
-        if (
-            event.event_type == 'modified'
-            and type(asset.metadata) is not Metadata
-        ):
-            # the access already waited for quiet. It is logged with what changed in the store
-            self.reads.add(asset, is_immediate=True, write=event)
-            return event
         event.apply(trail)
         return event
 
@@ -1336,8 +1252,6 @@ class WatchdogSession(Session):
         self.end_fold(str(asset.path))
         for access in self.take(asset.id):
             self.record(access)
-        # a write waiting for its read is logged before the event about to follow it
-        self.reads.flush(asset.id)
 
     def record_open(self) -> None:
         """
@@ -1346,7 +1260,6 @@ class WatchdogSession(Session):
         """
         trail = self._trail
         self.end_folds()
-        self.reads.flush()
         events = []
         for access in self.take():
             asset = trail.assets.id2entry.get(access.asset)
@@ -1530,4 +1443,3 @@ def _exit(reference: weakref.ref[WatchdogSession]) -> None:
     ):
         return
     session.record_open()
-    session._trail.baselines.save()

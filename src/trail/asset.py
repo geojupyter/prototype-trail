@@ -11,11 +11,9 @@ from typing import TYPE_CHECKING, ClassVar, Final, Self
 
 from trail import fmt
 from trail.entry import Entry, EntryCollection
-from trail.metadata import Metadata
 from trail.util import PathLike
 
 if TYPE_CHECKING:
-    from trail.event import MetadataEvent
     from trail.session import Access
     from trail.trail import Trail
 
@@ -43,8 +41,6 @@ class Asset(Entry):
     )
 
     is_directory: bool = field(default=False, repr=False)
-    # a summary of the file, to say what changed in it. Not a dataclass field
-    metadata = Metadata.descriptor()
 
     if TYPE_CHECKING:
         _parent: Assets = field(init=False, repr=False)
@@ -406,30 +402,8 @@ class Assets(EntryCollection[Asset]):
                     trail.dirs.refresh()
             tracked.append(asset)
         if made:
-            session = trail.watchdog.session
-            session.reconcile()
-            # the baselines of new assets with a reader are read in the background
-            if session.is_active:
-                readable = [
-                    asset
-                    for asset in tracked
-                    if type(asset.metadata) is not Metadata
-                ]
-                session.reads.load(readable)
+            trail.watchdog.session.reconcile()
         return tracked
-
-    def observe(self, basis: str = 'manual') -> list[MetadataEvent]:
-        """
-        Compare each asset with its last recorded state and log what changed. Takes one stat per
-        asset and reads only the files whose stat changed. Needs no watcher.
-        """
-        events = []
-        with self._trail.baselines.batch():
-            for asset in self:
-                event = asset.metadata.observe(basis)
-                if event is not None:
-                    events.append(event)
-        return events
 
     def _absorb(self, dirasset: DirAsset) -> None:
         """

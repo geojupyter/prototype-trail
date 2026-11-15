@@ -19,3 +19,11 @@ tutorials/toy-project/
 
 # MyST build outputs
 _build
+
+# generated when Trail runs in the tutorial and bug projects
+tutorials/project/.trail/
+tutorials/project/.ontrail
+tutorials/project/.offtrail
+bugs/project/.trail/
+bugs/project/.ontrail
+bugs/project/.offtrail
