@@ -319,12 +319,11 @@ def test_captured_server_feed_replays_in_trail(
         trail: Trail,
         server: Server,
 ) -> None:
-    path = Path(__file__).parent / 'fixtures' / 'focus.jsonl'
-    messages = path.read_text(encoding='utf-8').splitlines()
-    for text in messages:
-        message = trail.jupyter.session.consumer.receive(server, text)
+    path = Path(__file__).parent / 'fixtures' / 'focus.json'
+    messages = json.loads(path.read_text(encoding='utf-8'))
+    for payload in messages:
+        message = trail.jupyter.session.consumer.receive(server, json.dumps(payload))
         assert message.outcome == 'recorded'
-        payload = json.loads(text)
         schema_id = payload.pop('schema_id')
         event = trail.events[message.event]
         assert event.schema_id == schema_id
@@ -426,10 +425,11 @@ def test_baseline_history_replays(
     for path in (Path(__file__).parent / 'schemas').glob('*.yaml'):
         schema = yaml.safe_load(path.read_text(encoding='utf-8'))
         schemas[schema['$id']] = schema
-    path = Path(__file__).parent / 'fixtures' / 'baseline.jsonl'
+    path = Path(__file__).parent / 'fixtures' / 'baseline.json'
     consumer = trail.jupyter.session.consumer
-    for text in path.read_text(encoding='utf-8').splitlines():
-        payload = json.loads(text)
+    messages = json.loads(path.read_text(encoding='utf-8'))
+    for payload in messages:
+        text = json.dumps(payload)
         schema_id = payload.pop('schema_id')
         jsonschema.validate(payload, schemas[schema_id], format_checker=jsonschema.FormatChecker())
         message = consumer.receive(server, text)
@@ -466,10 +466,10 @@ def test_baseline_history_replays(
 def captured_updates() -> list[LayerV1Event]:
     # grammar-panel edits made in the symbology dialog of examples/earthquakes.jGIS, each closed
     # with Ok: add mag > 5, add has felt and switch to any, remove both, Ok without a change
-    path = Path(__file__).parent / 'fixtures' / 'symbology.jsonl'
+    path = Path(__file__).parent / 'fixtures' / 'symbology.json'
+    messages = json.loads(path.read_text(encoding='utf-8'))
     out = []
-    for text in path.read_text(encoding='utf-8').splitlines():
-        data = json.loads(text)
+    for data in messages:
         schema_id = data.pop('schema_id')
         out.append(LayerV1Event(schema_id=schema_id, data=data))
     return out

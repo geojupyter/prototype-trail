@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 
 def intern(value: Any) -> Any:
+    """Intern dictionary keys so that equal keys share one string. This saves memory."""
     if isinstance(value, dict):
         out = {
             sys.intern(key): intern(item)
@@ -33,33 +34,52 @@ def intern(value: Any) -> Any:
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class JupyterEvent(Event):
+    """
+    A record of Jupyter activity. A feed message is kept as the server sent it. Properties read its
+    fields.
+    """
+
+    # event class of each schema id
     registry: ClassVar[dict[str, type[JupyterEvent]]] = {}
+    # schema id a class records
     schema: ClassVar[str] = ''
+    # whether every view sends this message
     is_shared: ClassVar[bool] = True
+    # properties a query can select on
     selectable: ClassVar[tuple[str, ...]] = ('verb',)
 
+    # schema id of the payload
     schema_id: str
+    # the payload, with interned keys
     data: dict[str, Any] = field(repr=False)
+    # url of the server
     server: str = ''
+    # absolute path of the file the event is about
     src_path: str = ''
+    # asset of that file, set after init
     entry: Asset | None = field(default=None, init=False, repr=False)
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
+        """Register the class by its schema id."""
         if cls.schema:
             known = cls.registry.get(cls.schema)
-            if known is not None and not (
-                known.__module__ == cls.__module__
-                and (
-                    known.__qualname__ == cls.__qualname__
-                    or (
-                        '__slots__' in cls.__dict__
-                        and '__dataclass_fields__' in cls.__dict__
-                        and cls.__dict__['__dataclass_fields__']
-                        is known.__dict__.get('__dataclass_fields__')
+            if (
+                known is not None
+                and not (
+                    known.__module__ == cls.__module__
+                    and (
+                        known.__qualname__ == cls.__qualname__
+                        or (
+                            '__slots__' in cls.__dict__
+                            and '__dataclass_fields__' in cls.__dict__
+                            and cls.__dict__['__dataclass_fields__']
+                            is known.__dict__.get('__dataclass_fields__')
+                        )
                     )
                 )
             ):
                 raise TypeError(f'{cls.schema} is already registered by {known.__name__}')
+        # slots=True replaces the class captured by zero-argument super()
         super(JupyterEvent, cls).__init_subclass__(**kwargs)
         if cls.schema:
             cls.registry[cls.schema] = cls
@@ -76,6 +96,9 @@ class JupyterEvent(Event):
     # trail: origin - None means the message carries no locality, not that it is remote.
     @property
     def is_local(self) -> bool | None:
+        """
+        Whether the reporting view made the change, or None if the message does not say.
+        """
         out = self.data.get('local')
         if type(out) is not bool:
             return None
@@ -94,6 +117,7 @@ class JupyterEvent(Event):
             *,
             replay: bool = False,
     ) -> Asset | None:
+        """Append the event to the log unless replaying. Returns the asset."""
         if not replay:
             trail.events.append(self)
         return self.entry
@@ -101,6 +125,10 @@ class JupyterEvent(Event):
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class PageEvent(JupyterEvent):
+    """
+    An event that a browser page numbers. frontend_id names the page and focus_seq is its counter.
+    """
+
     # trail: mode - one browser page numbers its focus and mode records with one counter.
     @property
     def frontend_id(self) -> str | None:
@@ -115,6 +143,8 @@ class PageEvent(JupyterEvent):
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class DocumentEvent(PageEvent):
+    """A map opened, created, closed, activated or deactivated in a page."""
+
     # trail: focus - each view's lifecycle and focus transitions are independent.
     is_shared: ClassVar[bool] = False
     selectable: ClassVar[tuple[str, ...]] = (
@@ -123,11 +153,13 @@ class DocumentEvent(PageEvent):
 
     @property
     def is_focus(self) -> bool:
+        """Whether this is a focus change, activated or deactivated."""
         out = self.verb in ('activated', 'deactivated')
         return out
 
     @property
     def tool(self) -> str:
+        """The tool, always JupyterGIS."""
         return 'JupyterGIS'
 
     @property
@@ -141,6 +173,7 @@ class DocumentEvent(PageEvent):
 
     @property
     def reason(self) -> str | None:
+        """Why the focus changed."""
         out = (
             self.data
             .get('object', {})
@@ -165,12 +198,16 @@ class DocumentV1Event(DocumentEvent):
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class LayerEvent(JupyterEvent):
+    """A layer added, updated or removed in a map."""
+
     selectable: ClassVar[tuple[str, ...]] = (
         'verb', 'layer_id', 'layer', 'is_local', 'source', 'has_filter_change',
     )
 
     # trail: resources - stored, since the server that resolved the path may be gone on replay.
+    # asset id of the layer's data file, or None
     resource_id: str | None = field(default=None, repr=False)
+    # path of the layer's data file, or empty
     resource_path: str = field(default='', repr=False)
 
     @property
@@ -184,6 +221,7 @@ class LayerEvent(JupyterEvent):
 
     @property
     def layer(self) -> str | None:
+        """The layer name after the change, or before it for a removal."""
         obj = self.data.get('object', {})
         if self.verb == 'removed':
             value = obj.get('old', {})
@@ -194,6 +232,7 @@ class LayerEvent(JupyterEvent):
 
     @property
     def source(self) -> Source | None:
+        """The data source of the layer, if the message has one."""
         value = (
             self.data
             .get('object', {})
@@ -205,6 +244,7 @@ class LayerEvent(JupyterEvent):
     # trail: filters - an update's filters are described from the layer before and after.
     @property
     def symbology(self) -> SymbologyDiff | None:
+        """The style change of an update, or None."""
         if self.verb != 'updated':
             return None
         obj = self.data.get('object', {})
@@ -231,6 +271,7 @@ class LayerEvent(JupyterEvent):
     # trail: no-op - an update's other fields are described from the layer before and after.
     @property
     def changes(self) -> list[str]:
+        """A phrase for each other field an update changed."""
         if self.verb != 'updated':
             return []
         obj = self.data.get('object', {})
@@ -246,6 +287,7 @@ class LayerEvent(JupyterEvent):
 
     @property
     def has_filter_change(self) -> bool:
+        """Whether an update changed a filter."""
         diff = self.symbology
         has_change = (
             diff is not None
@@ -275,6 +317,7 @@ class LayerEvent(JupyterEvent):
         # trail-todo: origin - drop replicas reported by other views once locality is trusted.
 
 
+# types shown by value
 PLAIN = (str, int, float, bool, type(None))
 
 
@@ -292,8 +335,8 @@ def field_changes(
         skip: tuple[str, ...] = (),
 ) -> list[str]:
     """
-    One phrase per field that differs between two versions of a layer: the old and new value of a
-    plain value, or that a nested value changed. `name` and `visible` come first.
+    One phrase per field that differs between two versions of a layer. Plain values give the old and
+    new value. Nested values only say changed. Name and visible come first.
     """
 
     def order(name: str) -> tuple[bool, str]:
@@ -326,6 +369,7 @@ def resource_items(
         asset_id: str | None,
         prefix: str = '',
 ) -> Iterator[tuple[str, object]]:
+    """Rows that describe a data file. Nothing if there is no path."""
     if not path:
         return
     yield f'{prefix}resource_path', path
@@ -342,11 +386,19 @@ class LayerV1Event(LayerEvent):
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class SourceEvent(JupyterEvent):
+    """
+    A source added, updated or removed in a map. A source is the data a layer reads.
+    """
+
     selectable: ClassVar[tuple[str, ...]] = ('verb', 'source_id', 'is_local', 'old', 'new')
 
+    # asset id of the source's data file, or None
     resource_id: str | None = field(default=None, repr=False)
+    # path of the source's data file, or empty
     resource_path: str = field(default='', repr=False)
+    # asset id of the previous data file, or None
     previous_resource_id: str | None = field(default=None, repr=False)
+    # path of the previous data file, or empty
     previous_resource_path: str = field(default='', repr=False)
 
     @property
@@ -360,6 +412,7 @@ class SourceEvent(JupyterEvent):
 
     @property
     def old(self) -> Source | None:
+        """The source before the change."""
         value = (
             self.data
             .get('object', {})
@@ -370,6 +423,7 @@ class SourceEvent(JupyterEvent):
 
     @property
     def new(self) -> Source | None:
+        """The source after the change."""
         value = (
             self.data
             .get('object', {})
@@ -380,6 +434,7 @@ class SourceEvent(JupyterEvent):
 
     @property
     def current(self) -> Source | None:
+        """The source the change leaves in the map."""
         if self.verb == 'removed':
             out = self.old
         else:
@@ -388,6 +443,7 @@ class SourceEvent(JupyterEvent):
 
     @property
     def previous(self) -> Source | None:
+        """The source an update replaced."""
         if self.verb != 'updated':
             return None
         out = self.old
@@ -416,11 +472,14 @@ class SourceV1Event(SourceEvent):
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class ModeEvent(PageEvent):
+    """A tool of the map editor changed, such as to Identify or Add Marker."""
+
     # trail: mode - a mode belongs to one map model in one page and is never synchronized.
     is_shared: ClassVar[bool] = False
     selectable: ClassVar[tuple[str, ...]] = (
         'verb', 'mode', 'previous', 'frontend_id', 'focus_seq',
     )
+    # display name of each mode
     labels: ClassVar[dict[str, str]] = {
         'panning': 'none',
         'identifying': 'Identify',
@@ -465,6 +524,11 @@ class ModeV1Event(ModeEvent):
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class ExecutionEvent(JupyterEvent):
+    """
+    One execution of code in a kernel, built by Kernels from the kernel's messages. The verbs are
+    started, completed, errored and recovered.
+    """
+
     # trail: execution - a kernel's IOPub messages for one request, as Trail observed them.
     schema: ClassVar[str] = 'trail/notebook-execution/v1'
     is_shared: ClassVar[bool] = False
@@ -499,6 +563,7 @@ class ExecutionEvent(JupyterEvent):
 
     @property
     def status(self) -> str | None:
+        """ok or error for a finished execution, otherwise None."""
         if self.verb == 'completed':
             return 'ok'
         if self.verb == 'errored':
@@ -507,6 +572,7 @@ class ExecutionEvent(JupyterEvent):
 
     @property
     def duration(self) -> float | None:
+        """Seconds from start to end, if both are known."""
         started = self.data.get('started_at')
         ended = self.data.get('ended_at')
         if (
@@ -523,7 +589,10 @@ class ExecutionEvent(JupyterEvent):
         if self.execution_count is not None:
             yield 'execution_count', self.execution_count
         if self.verb in ('started', 'recovered'):
-            lines = self.code.splitlines() or ['']
+            lines = (
+                self.code.splitlines()
+                or ['']
+            )
             first = lines[0]
             if len(first) > 72:
                 first = f'{first[:69]}...'
@@ -553,6 +622,11 @@ class ExecutionEvent(JupyterEvent):
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class KernelSessionEvent(JupyterEvent):
+    """
+    A notebook attached to a kernel, detached from it, or its kernel restarted. Built by Kernels,
+    not sent by the server.
+    """
+
     # trail: execution - which notebook a kernel served, from the server's sessions.
     schema: ClassVar[str] = 'trail/kernel-session/v1'
     is_shared: ClassVar[bool] = False
@@ -585,6 +659,8 @@ class KernelSessionEvent(JupyterEvent):
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class ViewportEvent(JupyterEvent):
+    """The map view moved. The properties describe the view after the move."""
+
     is_shared: ClassVar[bool] = False
     selectable: ClassVar[tuple[str, ...]] = ('verb', 'coordinates', 'zoom', 'extent')
 
@@ -634,22 +710,29 @@ class ViewportV1Event(ViewportEvent):
 
 @dataclass(kw_only=True, slots=True, repr=False)
 class ContentsServiceV1Event(JupyterEvent):
+    """A run of saves of one tracked file, from Jupyter Server's contents service."""
+
     schema: ClassVar[str] = 'https://events.jupyter.org/jupyter_server/contents_service/v1'
     is_shared: ClassVar[bool] = False
     selectable: ClassVar[tuple[str, ...]] = ('verb',)
 
     # trail: saves - one record holds a run of saves and the file sessions they caused.
+    # time of the first save
     started: datetime | None = None
+    # number of saves
     saves: int = 1
+    # file sessions folded into the run
     writes: int = 0
 
     def __post_init__(self) -> None:
+        """Read started from text when replayed."""
         JupyterEvent.__post_init__(self)
         if isinstance(self.started, str):
             self.started = datetime.fromisoformat(self.started)
 
     @property
     def verb(self) -> str:
+        """saved for a save, otherwise the action."""
         if self.data.get('action') == 'save':
             return 'saved'
         out = self.data.get('action', '')

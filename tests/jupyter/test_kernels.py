@@ -12,7 +12,7 @@ from trail.jupyter.event import ExecutionEvent, KernelSessionEvent
 from trail.jupyter.kernels import Kernel, Kernels
 from trail.jupyter.server import Server
 
-FIXTURE = Path(__file__).parent / 'fixtures' / 'iopub.jsonl'
+FIXTURE = Path(__file__).parent / 'fixtures' / 'iopub.json'
 
 
 @pytest.fixture
@@ -53,8 +53,9 @@ def test_a_captured_run_is_logged_per_execution(
     path = notebook(trail)
     kernels.update(server, [{'path': 'analysis.ipynb', 'kernel': {'id': 'K1', 'name': 'python3'}}])
     kernel = kernels.data[server.json.url, 'K1']
-    for line in FIXTURE.read_text(encoding='utf-8').splitlines():
-        kernels.receive(kernel, line)
+    messages = json.loads(FIXTURE.read_text(encoding='utf-8'))
+    for payload in messages:
+        kernels.receive(kernel, json.dumps(payload))
     logged = executions(trail)
     assert [
         (event.verb, event.execution_count)

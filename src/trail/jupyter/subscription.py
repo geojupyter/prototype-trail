@@ -12,9 +12,16 @@ if TYPE_CHECKING:
 
 
 async def subscribe(server: Server) -> None:
+    """
+    Read the server's event feed and pass each message to the consumer. Reconnect after a drop until
+    the server stops, refuses Trail or has no feed.
+    """
     session = server.servers.session
     delay = server.backoff
-    while session.is_active and not server.is_stopped:
+    while (
+        session.is_active
+        and not server.is_stopped
+    ):
         server.fail('connecting')
         socket = None
         try:
@@ -26,9 +33,12 @@ async def subscribe(server: Server) -> None:
             )
             socket = await websocket_connect(
                 request,
+                # ping to notice a dead socket
                 ping_interval=20,
                 ping_timeout=20,
+                # above the 10 MiB default
                 max_message_size=64 * 1024 * 1024,
+                # no: this is hard-coded, it should dynamically retrieve the value
             )
             server.socket = socket
             server.fail('subscribed')
@@ -75,3 +85,5 @@ async def subscribe(server: Server) -> None:
         await asyncio.sleep(delay)
         delay = min(delay * 2, server.ceiling)
     server.fail('stopped')
+
+# no: we don't need a subscription.py for this, it should just be bound as Server.subscribe

@@ -17,22 +17,30 @@ if TYPE_CHECKING:
 
 
 class Jupyter(Node):
+    """The Jupyter servers Trail can connect to. The session holds the connections."""
+
+    # one run of the connections
     session = JupyterSession.descriptor()
+    # called with status text, set by the console
     on_notice: Callable[[str], None] | None = None
+    # called with each kept message
     on_message: Callable[[Message], None] | None = None
 
     @cached_property
     def jsons(self) -> JSONs:
+        """Runtime files of the servers on this machine."""
         out = JSONs()
         return out
 
     @cached_property
     def manual(self) -> dict[str, JSON]:
+        """Servers added with connect, by url."""
         out = {}
         return out
 
     @cached_property
     def disconnected(self) -> set[str]:
+        """Urls of servers that were disconnected."""
         out = set()
         return out
 
@@ -43,6 +51,7 @@ class Jupyter(Node):
             token: str,
             root: str | Path,
     ) -> None:
+        """Add a server that Trail cannot find itself, such as one in a container."""
         info = JSON(url=url, token=Secret(token), root=Path(root))
         self.manual[info.url] = info
         self.disconnected.discard(info.url)
@@ -52,6 +61,7 @@ class Jupyter(Node):
         self.session.servers.refresh()
 
     def disconnect(self, url: str) -> None:
+        """Stop listening to a server."""
         url = normalize_url(url)
         self.disconnected.add(url)
         server = self.session.servers.data.get(url)
@@ -59,10 +69,14 @@ class Jupyter(Node):
             server.close()
 
     def overlaps(self, root: Path) -> bool:
+        """Whether a server rooted at root can name a file that Trail tracks."""
         out = any(
             root == entry.path
             or entry.path.is_relative_to(root)
-            or (entry.is_recursive and root.is_relative_to(entry.path))
+            or (
+                entry.is_recursive
+                and root.is_relative_to(entry.path)
+            )
             for entry in self._trail.dirs
         )
         if not out:
@@ -73,9 +87,13 @@ class Jupyter(Node):
         return out
 
     def is_inside(self, folder: Path) -> bool:
+        """Whether files in folder belong to the project."""
         out = any(
             folder == entry.path
-            or (entry.is_recursive and folder.is_relative_to(entry.path))
+            or (
+                entry.is_recursive
+                and folder.is_relative_to(entry.path)
+            )
             for entry in self._trail.dirs
         )
         return out
@@ -86,6 +104,9 @@ class Jupyter(Node):
             server: str,
             frontend_id: str,
     ) -> Events:
+        """
+        The focus and tool events of one browser page, in the order the page sent them.
+        """
         url = normalize_url(server)
         # trail: mode - tool changes share the focus counter of the page that sent them.
         events = [
@@ -122,6 +143,7 @@ class Jupyter(Node):
         return out
 
     def notice(self, text: str) -> None:
+        """Pass status text to on_notice. A failing callback only warns."""
         if self.on_notice is not None:
             try:
                 self.on_notice(text)
@@ -129,6 +151,7 @@ class Jupyter(Node):
                 warnings.warn('Jupyter notice callback failed', stacklevel=2)
 
     def message(self, message: Message) -> None:
+        """Pass a kept message to on_message. A failing callback only warns."""
         if self.on_message is not None:
             try:
                 self.on_message(message)

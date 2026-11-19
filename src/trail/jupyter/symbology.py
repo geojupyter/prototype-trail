@@ -11,11 +11,13 @@ type Scope = tuple[str, str | None]
 
 
 def canonical(value: Any) -> str:
+    """JSON text with sorted keys. Equal values give equal text."""
     out = json.dumps(value, sort_keys=True)
     return out
 
 
 def number(value: Any) -> str:
+    """Text of a value, with whole floats written as integers."""
     # 5.0 from a saved map and 5 from the dialog are the same threshold
     if (
         isinstance(value, float)
@@ -28,26 +30,41 @@ def number(value: Any) -> str:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Conditions:
+    """The conditions that limit what a grammar layer or rule applies to."""
+
+    # predicates as canonical JSON
     when: tuple[str, ...] = ()
+    # all or any
     when_op: str = 'all'
 
     @classmethod
     def of(cls, item: dict[str, Any]) -> Conditions:
         when = tuple(
             canonical(predicate)
-            for predicate in item.get('when') or []
+            for predicate in (
+                item.get('when')
+                or []
+            )
         )
         out = cls(
             when=when,
-            when_op=item.get('whenOp') or 'all',
+            when_op=(
+                item.get('whenOp')
+                or 'all'
+            ),
         )
         return out
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PredicateChange:
+    """A predicate added to or removed from a scope."""
+
+    # added or removed
     verb: Literal['added', 'removed']
+    # grammar layer and rule
     scope: Scope
+    # the predicate
     predicate: dict[str, Any]
 
     @property
@@ -57,6 +74,9 @@ class PredicateChange:
 
     @property
     def label(self) -> str:
+        """
+        The row label: filter, geometry condition or rule condition, then the verb.
+        """
         if self.scope[1] is not None:
             out = f'rule condition {self.verb}'
         elif self.is_geometry:
@@ -67,6 +87,7 @@ class PredicateChange:
 
     @property
     def text(self) -> str:
+        """The predicate in words."""
         predicate = self.predicate
         kind = predicate.get('type')
         field = predicate.get('field')
@@ -87,8 +108,13 @@ class PredicateChange:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CombinatorChange:
+    """A scope whose conditions switched between all and any."""
+
+    # grammar layer and rule
     scope: Scope
+    # previous setting
     old: str
+    # current setting
     new: str
 
     @property
@@ -102,23 +128,34 @@ class CombinatorChange:
 
 
 class SymbologyDiff:
+    """The difference between a layer's style before and after an update."""
+
     def __init__(
             self,
             old: dict[str, Any] | None,
             new: dict[str, Any] | None,
     ) -> None:
+        # style before
         self.old = old
+        # style after
         self.new = new
 
     @staticmethod
     def conditions(state: dict[str, Any] | None) -> dict[Scope, Conditions]:
+        """The conditions of a style, by scope."""
         out: dict[Scope, Conditions] = {}
         if not isinstance(state, dict):
             return out
-        for index, grammar in enumerate(state.get('layers') or []):
+        for index, grammar in enumerate(
+            state.get('layers')
+            or []
+        ):
             grammar_id = str(grammar.get('id', f'#{index}'))
             out[grammar_id, None] = Conditions.of(grammar)
-            for position, rule in enumerate(grammar.get('rules') or []):
+            for position, rule in enumerate(
+                grammar.get('rules')
+                or []
+            ):
                 rule_id = str(rule.get('id', f'#{position}'))
                 out[grammar_id, rule_id] = Conditions.of(rule)
         return out
@@ -135,6 +172,7 @@ class SymbologyDiff:
 
     @cached_property
     def predicates(self) -> tuple[PredicateChange, ...]:
+        """The predicates added or removed in each scope."""
         empty = Conditions()
         changes = []
         scopes = dict.fromkeys([*self.before, *self.after])
@@ -155,6 +193,7 @@ class SymbologyDiff:
 
     @cached_property
     def combinators(self) -> tuple[CombinatorChange, ...]:
+        """The scopes whose all or any setting changed."""
         empty = Conditions()
         changes = []
         scopes = dict.fromkeys([*self.before, *self.after])
@@ -168,6 +207,7 @@ class SymbologyDiff:
 
     @staticmethod
     def stripped(state: dict[str, Any] | None) -> str:
+        """A style as JSON text without any conditions."""
         if not isinstance(state, dict):
             return canonical(state)
 
@@ -180,11 +220,17 @@ class SymbologyDiff:
             return out
 
         layers = []
-        for grammar in state.get('layers') or []:
+        for grammar in (
+            state.get('layers')
+            or []
+        ):
             layer = bare(grammar)
             layer['rules'] = [
                 bare(rule)
-                for rule in grammar.get('rules') or []
+                for rule in (
+                    grammar.get('rules')
+                    or []
+                )
             ]
             layers.append(layer)
         out = canonical({**state, 'layers': layers})
@@ -192,11 +238,13 @@ class SymbologyDiff:
 
     @cached_property
     def has_other_changes(self) -> bool:
+        """Whether the style changed apart from its conditions."""
         has_changes = self.stripped(self.old) != self.stripped(self.new)
         return has_changes
 
     @property
     def has_filter_change(self) -> bool:
+        """Whether any condition changed."""
         has_change = bool(
             self.predicates
             or self.combinators

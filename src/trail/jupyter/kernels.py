@@ -23,10 +23,12 @@ if TYPE_CHECKING:
     from trail.jupyter.server import Server
     from trail.jupyter.session import JupyterSession
 
+# message types that carry output
 OUTPUTS = ('stream', 'display_data', 'execute_result', 'update_display_data')
 
 
 def moment(header: dict[str, Any]) -> datetime:
+    """The time of a kernel message, or now if it has none."""
     # the kernel stamps each message. A message without a stamp is dated when it arrives
     value = header.get('date')
     if isinstance(value, str):
@@ -43,6 +45,7 @@ def moment(header: dict[str, Any]) -> datetime:
 
 
 def history_request(identifier: str) -> str:
+    """Text of a request for the inputs of the kernel's current session."""
     # the inputs of the kernel's current session, as typed
     header = {
         'msg_id': identifier,
@@ -72,30 +75,49 @@ def history_request(identifier: str) -> str:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Request:
-    # what the page that sent an execute request said about it
+    """What a page said about one execute request."""
+
+    # kernel the request went to
     kernel_id: str
+    # notebook or console that sent it, or None
     document_path: str | None = None
+    # cell that sent it, or None
     cell_id: str | None = None
 
 
 @dataclass(slots=True, kw_only=True, eq=False)
 class Execution:
+    """One execution a kernel is running, built from its messages."""
+
+    # execute request id
     request_id: str
+    # when the kernel went busy
     started: datetime
+    # the code that ran
     code: str = ''
+    # the kernel's execution number
     execution_count: int | None = None
-    # when the code arrived, which a deferred started record keeps
+    # when the code arrived
     submitted: datetime | None = None
+    # output messages counted by kind
     outputs: dict[str, int] = field(default_factory=dict)
+    # the error, or None
     error: dict[str, str] | None = None
+    # the started event, once logged
     event: ExecutionEvent | None = None
+    # pending call that logs the started event
     timer: asyncio.TimerHandle | None = None
 
 
 @dataclass(slots=True, kw_only=True, eq=False)
 class Kernel:
+    """One kernel of a server."""
+
+    # the server running the kernel
     server: Server
+    # kernel id
     id: str
+    # kernel spec name
     name: str = ''
     # the notebooks and consoles the server says use this kernel
     paths: tuple[str, ...] = ()
@@ -104,25 +126,34 @@ class Kernel:
     documents: tuple[str, ...] = ()
     # the kernel process's message session, which changes when the kernel restarts
     session: str = ''
+    # running executions, by request id
     executions: dict[str, Execution] = field(default_factory=dict)
     # the id of Trail's own history request, whose reply lists the inputs Trail missed
     history: str = ''
+    # task listening to the channels
     task: asyncio.Task[None] | None = None
+    # open channels connection
     socket: WebSocketClientConnection | None = None
 
 
 class Kernels(Node):
+    """Follows the kernels of the notebooks and logs their executions and sessions."""
+
     _parent: JupyterSession
     # seconds a websocket waits before it connects again
     backoff = 2.0
     # trail: execution - seconds a started record waits for the page to name its cell
     wait = 0.5
+    # most requests kept
     request_limit = 10000
 
     def __init__(self, parent: JupyterSession) -> None:
         super().__init__(parent)
+        # kernels by server url and kernel id
         self.data: dict[tuple[str, str], Kernel] = {}
+        # session fetch task, by server url
         self.polls: dict[str, asyncio.Task[None]] = {}
+        # page requests by id, oldest first
         self.requests: OrderedDict[str, Request] = OrderedDict()
 
     def request(
@@ -130,6 +161,9 @@ class Kernels(Node):
             server: Server,
             record: Message,
     ) -> None:
+        """
+        Read a message in which a page names the cell and notebook of an execute request.
+        """
         obj = record.data.get('object')
         if not isinstance(obj, dict):
             raise TypeError('Expected an object')
@@ -153,7 +187,10 @@ class Kernels(Node):
         )
         while len(self.requests) > self.request_limit:
             self.requests.popitem(last=False)
-        record.src_path = document_path or ''
+        record.src_path = (
+            document_path
+            or ''
+        )
         record.outcome = 'used'
         kernel = self.data.get((server.json.url, kernel_id))
         if kernel is None:
@@ -164,8 +201,12 @@ class Kernels(Node):
             and execution.submitted is not None
         ):
             self.start(kernel, execution)
+    # no: The checks are unnecessary. We only get strings or None. We only receive messages fro Jupyter
+    #   You can simplify this and just use explicit getitem or get() or optiona lfields.
+    # no: start() is misleading; let's do `get_start()` instead.
 
     def refresh(self) -> None:
+        """Fetch the sessions of each subscribed server."""
         for url, server in self._parent.servers.items():
             poll = self.polls.get(url)
             if (
@@ -180,6 +221,7 @@ class Kernels(Node):
             self.polls[url] = asyncio.create_task(coroutine, name=f'jupyter-sessions-{server.number}')
 
     async def poll(self, server: Server) -> None:
+        """Fetch a server's sessions and update the kernels."""
         url = f'{server.json.url}api/sessions'
         request = HTTPRequest(
             url,
@@ -199,10 +241,16 @@ class Kernels(Node):
             server: Server,
             sessions: list[dict[str, Any]],
     ) -> None:
+        """
+        Match the kernels to the server's sessions, logging notebooks that attach or detach.
+        """
         found: dict[str, Kernel] = {}
         paths: dict[str, list[str]] = {}
         for session in sessions:
-            kernel = session.get('kernel') or {}
+            kernel = (
+                session.get('kernel')
+                or {}
+            )
             identifier = kernel.get('id')
             path = session.get('path')
             if (
@@ -279,6 +327,7 @@ class Kernels(Node):
             server: Server,
             path: str,
     ) -> bool:
+        """Whether the path names a file under the server root."""
         located = server.locate(path)
         is_file = (
             located is not None
@@ -287,10 +336,12 @@ class Kernels(Node):
         return is_file
 
     def connect(self, kernel: Kernel) -> None:
+        """Start listening to a kernel."""
         coroutine = self.listen(kernel)
         kernel.task = asyncio.create_task(coroutine, name=f'jupyter-kernel-{kernel.id[:8]}')
 
     async def listen(self, kernel: Kernel) -> None:
+        """Listen to a kernel's channels, reconnecting after a drop."""
         server = kernel.server
         parts = urlsplit(server.json.url)
         if parts.scheme == 'https':
@@ -336,14 +387,21 @@ class Kernels(Node):
             kernel: Kernel,
             text: str,
     ) -> ExecutionEvent | None:
+        """Read one kernel message. Returns the event it logged, or None."""
         try:
             message = json.loads(text)
         except ValueError:
             return None
         if not isinstance(message, dict):
             return None
-        header = message.get('header') or {}
-        parent = message.get('parent_header') or {}
+        header = (
+            message.get('header')
+            or {}
+        )
+        parent = (
+            message.get('parent_header')
+            or {}
+        )
         if (
             message.get('channel') == 'shell'
             and header.get('msg_type') == 'history_reply'
@@ -371,7 +429,10 @@ class Kernels(Node):
         if not isinstance(request_id, str):
             return None
         kind = header.get('msg_type')
-        content = message.get('content') or {}
+        content = (
+            message.get('content')
+            or {}
+        )
         at = moment(header)
         execution = kernel.executions.get(request_id)
         if execution is None:
@@ -431,10 +492,20 @@ class Kernels(Node):
             kernel: Kernel,
             reply: dict[str, Any],
     ) -> list[ExecutionEvent]:
+        """Log the inputs a kernel ran before Trail listened."""
         # history keeps no time, outcome, notebook or cell. The kernel's current documents are
         # kept as context, but they do not show which one ran an input
-        session = (reply.get('header') or {}).get('session')
-        entries = (reply.get('content') or {}).get('history') or []
+        session = (
+            reply.get('header')
+            or {}
+        ).get('session')
+        entries = (
+            (
+                reply.get('content')
+                or {}
+            ).get('history')
+            or []
+        )
         if not isinstance(session, str):
             return []
         logged = {
@@ -485,6 +556,7 @@ class Kernels(Node):
             kernel: Kernel,
             execution: Execution,
     ) -> ExecutionEvent | None:
+        """Log the started event of an execution, once."""
         if execution.timer is not None:
             execution.timer.cancel()
             execution.timer = None
@@ -502,6 +574,7 @@ class Kernels(Node):
             kernel: Kernel,
             path: str | None = None,
     ) -> tuple[str, Asset | None]:
+        """The absolute path and asset of the notebook a record is about."""
         if path is None:
             # a kernel names its document only when that document is its one session
             if (
@@ -532,6 +605,7 @@ class Kernels(Node):
             verb: str,
             at: datetime,
     ) -> ExecutionEvent:
+        """Log an execution event at the given time."""
         # the page that sent the request names its document, even on a kernel shared by several
         request = self.requests.get(execution.request_id)
         if (
@@ -577,6 +651,7 @@ class Kernels(Node):
             verb: str,
             path: str,
     ) -> KernelSessionEvent:
+        """Log a kernel session event."""
         src_path, asset = self.resolve(kernel, path)
         data = {
             'verb': verb,
@@ -596,6 +671,7 @@ class Kernels(Node):
         return event
 
     def drop(self, key: tuple[str, str]) -> None:
+        """Stop following a kernel."""
         kernel = self.data.pop(key, None)
         if kernel is None:
             return
@@ -612,6 +688,7 @@ class Kernels(Node):
             kernel.task.cancel()
 
     def close(self) -> None:
+        """Drop every kernel."""
         for key in list(self.data):
             self.drop(key)
         for poll in self.polls.values():

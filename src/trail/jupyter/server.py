@@ -19,13 +19,34 @@ if TYPE_CHECKING:
 
     from trail.jupyter.session import JupyterSession
 
+# state of a server connection
 State = Literal[
-    'available', 'connecting', 'subscribed', 'retrying', 'refused',
-    'unsupported', 'error', 'disconnected', 'stopped',
+    # found, not connected
+    'available',
+    # opening the feed
+    'connecting',
+    # feed open
+    'subscribed',
+    # feed dropped, trying again
+    'retrying',
+    # token, redirect or certificate refused
+    'refused',
+    # server has no event feed
+    'unsupported',
+    # the feed task crashed
+    'error',
+    # stopped by disconnect
+    'disconnected',
+    # runtime file or process gone
+    'stopped',
 ]
 
 
 def normalize_url(url: str) -> str:
+    """
+    The url in the form that keys a server. Raises ValueError unless it is a plain http or https
+    url.
+    """
     parts = urlsplit(url)
     if (
         parts.scheme not in ('http', 'https')
@@ -41,6 +62,8 @@ def normalize_url(url: str) -> str:
 
 
 class Secret:
+    """A token that hides itself in reprs and cannot be pickled."""
+
     __slots__ = ('value',)
 
     def __init__(self, value: str) -> None:
@@ -55,13 +78,23 @@ class Secret:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class JSON:
+    """A Jupyter runtime file, or the same details given for a server with none."""
+
+    # where the server listens
     url: str
+    # folder the server serves
     root: Path
+    # access token, hidden from reprs
     token: Secret = field(repr=False, compare=False)
+    # the runtime file, or None
     path: Path | None = None
+    # server process id
     pid: int | None = None
+    # file modification time
     written: float = 0.0
+    # unix socket path, or empty
     sock: str = ''
+    # whether a password is required
     password: bool = False
 
     def __post_init__(self) -> None:
@@ -75,9 +108,13 @@ class JSON:
 
     @property
     def is_running(self) -> bool:
+        """Whether the server process is alive and wrote the file."""
         if self.path is None:
             return True
-        if self.pid is None or self.pid <= 0:
+        if (
+            self.pid is None
+            or self.pid <= 0
+        ):
             return False
         try:
             process = psutil.Process(self.pid)
@@ -92,10 +129,14 @@ class JSON:
 
 
 class JSONs(Mapping[Path, JSON]):
+    """The runtime files in Jupyter's runtime folder, by path."""
+
     def __init__(self, directory: Path | None = None) -> None:
         if directory is None:
             directory = Path(jupyter_runtime_dir())
+        # the runtime folder
         self.directory = directory
+        # files found by the last refresh
         self.data: dict[Path, JSON] = {}
 
     def __getitem__(self, key: Path) -> JSON:
@@ -111,6 +152,9 @@ class JSONs(Mapping[Path, JSON]):
         return out
 
     def refresh(self) -> None:
+        """
+        Read the runtime folder again, skipping files that are unreadable or incomplete.
+        """
         found = {}
         for path in sorted(self.directory.glob('jpserver-*.json')):
             try:
@@ -152,41 +196,89 @@ class JSONs(Mapping[Path, JSON]):
         return out
 
 
+
 @dataclass(slots=True)
 class Counts:
+    """Message counts for one server."""
+
+    # messages received
     received: int = 0
+    # events recorded
     recorded: int = 0
+    # messages skipped, by reason
     skipped: Counter[str] = field(default_factory=Counter)
+    # messages of other schemas, by schema id
     other: Counter[str] = field(default_factory=Counter)
+
+
+
+# no: use Counter[Reason] for explicit reasons:
+#     class Reason(StrEnum):
+#         INVALID_MESSAGE = 'invalid message'
+#         INVALID_PAYLOAD = 'invalid payload'
+#         UNSAVED = 'unsaved'
+#         OUTSIDE_ROOT = 'outside root'
+#         OUTSIDE_PROJECT = 'outside project'
+#         OFFTRAILED = 'offtrailed'
+#         FILE_MISSING = 'file missing'
+#         UNTRACKED_CONTENTS = 'untracked contents'
+#         DUPLICATE_DELIVERY = 'duplicate delivery'
+#         CONSUMER_ERROR = 'consumer error'
+#         KERNEL_CONNECTION = 'kernel connection'
+#
+#     skipped: Counter[Reason] = field(default_factory=Counter)
 
 
 @dataclass(eq=False, kw_only=True, repr=False)
 class Server:
+    """Trail's handle on one Jupyter server during a run."""
+
+    # the run's servers
     servers: Servers = field(repr=False)
+    # number shown in notices
     number: int
+    # runtime file details
     json: JSON
+    # connection state
     state: State = 'available'
+    # reason for the last state change
     last_error: str = ''
+    # message counts
     counts: Counts = field(default_factory=Counts)
+    # schema versions seen, by schema id
     schemas: dict[str, str] = field(default_factory=dict)
+    # renamed paths, by old path
     renames: dict[str, str] = field(default_factory=dict)
+    # task reading the feed
     task: asyncio.Task[None] | None = field(default=None, repr=False)
+    # open feed connection
     socket: WebSocketClientConnection | None = field(default=None, repr=False)
+    # seconds before the first retry
     backoff: float = 0.5
+    # longest wait between retries
     ceiling: float = 30.0
 
     @property
     def is_running(self) -> bool:
+        """Whether the server process is alive."""
         out = self.json.is_running
         return out
 
     @property
     def is_stopped(self) -> bool:
+        """Whether the runtime file or process is gone."""
         path = self.json.path
-        out = path is not None and (not path.exists() or not self.is_running)
+        out = (
+            path is not None
+            and (
+                not path.exists()
+                or not self.is_running
+            )
+        )
         return out
 
     def headers(self) -> dict[str, str]:
+        """Request headers, including the token."""
         out = {}
         if self.json.token.value:
             out['Authorization'] = f'token {self.json.token.value}'
@@ -194,6 +286,7 @@ class Server:
 
     @property
     def endpoint(self) -> str:
+        """Websocket address of the event feed."""
         parts = urlsplit(self.json.url)
         if parts.scheme == 'https':
             scheme = 'wss'
@@ -203,6 +296,9 @@ class Server:
         return out
 
     def locate(self, document_path: str) -> Path | None:
+        """
+        The local path of a file the server names, or None if the path is not allowed.
+        """
         path = PurePosixPath(document_path)
         if (
             path.is_absolute()
@@ -216,6 +312,7 @@ class Server:
         return out
 
     def renamed(self, document_path: str) -> str:
+        """Apply the renames the server reported to a path."""
         seen = set()
         while document_path not in seen:
             seen.add(document_path)
@@ -235,7 +332,11 @@ class Server:
             state: State,
             reason: str = '',
     ) -> None:
-        if state == self.state and reason == self.last_error:
+        """Set the state and reason, and send a notice."""
+        if (
+            state == self.state
+            and reason == self.last_error
+        ):
             return
         self.state = state
         self.last_error = reason
@@ -246,6 +347,7 @@ class Server:
             state: State = 'disconnected',
             reason: str = '',
     ) -> None:
+        """Close the feed and set the state."""
         if self.socket is not None:
             self.socket.close()
             self.socket = None
@@ -274,9 +376,14 @@ class Server:
 
 
 class Servers(Mapping[str, Server]):
+    """The servers of a run, by url."""
+
     def __init__(self, session: JupyterSession) -> None:
+        # the run that holds the servers
         self.session = session
+        # servers by url
         self.data: dict[str, Server] = {}
+        # number of the latest server
         self.number = 0
 
     def __getitem__(self, url: str) -> Server:
@@ -292,6 +399,10 @@ class Servers(Mapping[str, Server]):
         return out
 
     def refresh(self) -> None:
+        """
+        Match the servers to the runtime files and added servers, and start feeds for those that
+        should connect.
+        """
         from trail.jupyter.subscription import subscribe
 
         def freshness(info: JSON) -> tuple[bool, float]:
@@ -300,21 +411,30 @@ class Servers(Mapping[str, Server]):
 
         jupyter = self.session._parent
         jupyter.jsons.refresh()
+        # the last file for a url wins
         found = {
             info.url: info
             for info in sorted(jupyter.jsons.values(), key=freshness)
         }
+        # added servers replace found ones
         found.update(jupyter.manual)
         for url, server in self.data.items():
             if url not in found:
                 server.close('stopped')
         for url, info in found.items():
             server = self.data.get(url)
-            changed = server is not None and (
-                server.json != info
-                or server.json.token.value != info.token.value
+            # JSON does not compare the token
+            changed = (
+                server is not None
+                and (
+                    server.json != info
+                    or server.json.token.value != info.token.value
+                )
             )
-            if server is None or changed:
+            if (
+                server is None
+                or changed
+            ):
                 if server is not None:
                     server.close('stopped')
                 self.number += 1
@@ -326,11 +446,20 @@ class Servers(Mapping[str, Server]):
                 server.close('stopped')
             elif info.sock:
                 server.fail('available', 'Unix sockets are not supported')
-            elif info.password and not info.token.value:
+            elif (
+                info.password
+                and not info.token.value
+            ):
                 server.fail('available', 'A token is required for password-protected servers')
-            elif url not in jupyter.manual and not jupyter.overlaps(info.root):
+            elif (
+                url not in jupyter.manual
+                and not jupyter.overlaps(info.root)
+            ):
                 server.close('available', 'outside this project')
-            elif self.session.is_active and server.state in ('available', 'stopped'):
+            elif (
+                self.session.is_active
+                and server.state in ('available', 'stopped')
+            ):
                 server.fail('connecting')
                 coroutine = subscribe(server)
                 server.task = asyncio.create_task(coroutine, name=f'jupyter-{server.number}')

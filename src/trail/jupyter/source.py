@@ -8,22 +8,36 @@ from trail import fmt
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Inline:
+    """Data held inside the map file. Only its field name and size are reported."""
+
+    # parameter that holds the data
     field: str
+    # size in bytes
     size: int
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Source:
+    """A reference to the data a layer reads, as the event feed reports it."""
+
+    # source id in the map
     id: str
+    # kind of source
     type: str
+    # data file path as written in the map
     path: str | None = None
+    # same path relative to the server root
     resolved_path: str | None = None
+    # tables read
     tables: tuple[str, ...] = ()
+    # urls read, without credentials or query
     urls: tuple[str, ...] = ()
+    # inline data, if there is no path
     inline: Inline | None = None
 
     @classmethod
     def from_payload(cls, value: Any) -> Source | None:
+        """Build a Source from a payload, or None if it is malformed."""
         if (
             not isinstance(value, dict)
             or not isinstance(value.get('id'), str)

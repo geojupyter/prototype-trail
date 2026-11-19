@@ -18,18 +18,26 @@ if TYPE_CHECKING:
     from trail.jupyter.session import JupyterSession
     from trail.jupyter.source import Source
 
+# schema id prefix of JupyterGIS messages
 PREFIX = 'https://schema.jupytergis.org/events/'
+# schema id of the message that names the cell of an execute request
 NOTEBOOK = f'{PREFIX}notebook/v1'
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Map:
+    """The map a message is about, as found by resolve."""
+
+    # the map's asset, or None if untracked
     asset: Asset | None = None
+    # the map's local path, or None
     path: Path | None = None
+    # why the message is skipped, or None
     reason: str | None = None
 
     @property
     def src_path(self) -> str:
+        """The map's absolute path, or an empty string."""
         if self.asset is not None:
             out = str(self.asset.path)
         elif self.path is not None:
@@ -41,21 +49,32 @@ class Map:
 
 @dataclass(slots=True, kw_only=True, eq=False)
 class Run:
+    """The saves of one tracked file, logged as one event when the run closes."""
+
+    # the event the run becomes
     event: ContentsServiceV1Event
+    # the server that reported the saves
     server: Server
     # epoch seconds of each save
     saves: list[float]
+    # the message of each save
     messages: list[Message]
-
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Resource:
+    """The data file a layer or source reads."""
+
+    # absolute path, or empty if outside the project
     path: str = ''
+    # asset id, or None if untracked
     asset_id: str | None = None
 
 
 class Consumer(Node):
+    """Turns the messages of every server's feed into events."""
+
     _parent: JupyterSession
+    # most delivery keys kept
     delivery_limit = 10000
     # trail: saves - seconds without a save after which a run of saves of one file is logged
     run_gap = 30.0
@@ -64,9 +83,13 @@ class Consumer(Node):
 
     def __init__(self, parent: JupyterSession) -> None:
         super().__init__(parent)
+        # count of messages received, from all servers
         self.number = 0
+        # asset of each subject (one map view), kept across renames
         self.subjects: dict[tuple[Server, str], Asset] = {}
+        # keys of recorded messages with a stream and sequence, oldest first
         self.deliveries: OrderedDict[tuple[str, str, int], None] = OrderedDict()
+        # open run of saves, by file path
         self.runs: dict[Path, Run] = {}
 
     def receive(
@@ -76,12 +99,22 @@ class Consumer(Node):
             *,
             at: float | None = None,
     ) -> Message | None:
+        """
+        Handle one message from a server's feed. Returns the kept Message, or None.
+
+        Invalid messages and other schemas are counted and dropped. The rest go by schema:
+
+        - notebook messages to Kernels.request
+        - other JupyterGIS messages to route
+        - contents service messages to observe
+        """
         server.counts.received += 1
         self.number += 1
         try:
             payload = json.loads(text)
             if not isinstance(payload, dict):
                 raise TypeError
+            # the rest is the message data
             schema_id = payload.pop('schema_id')
             if not isinstance(schema_id, str):
                 raise TypeError
@@ -89,7 +122,10 @@ class Consumer(Node):
             server.counts.skipped['invalid message'] += 1
             return None
         is_gis = schema_id.startswith(PREFIX)
-        if not is_gis and schema_id != ContentsServiceV1Event.schema:
+        if (
+            not is_gis
+            and schema_id != ContentsServiceV1Event.schema
+        ):
             server.counts.other[schema_id] += 1
             return None
         if at is None:
@@ -104,6 +140,7 @@ class Consumer(Node):
             data=payload,
         )
         if is_gis:
+            # the last part of the id is the version
             server.schemas[schema_id] = schema_id.rsplit('/', 1)[-1]
         try:
             if schema_id == NOTEBOOK:
@@ -118,6 +155,7 @@ class Consumer(Node):
             record.reason = 'invalid payload'
         if record.outcome == 'skipped':
             server.counts.skipped[record.reason] += 1
+        # messages about no file of the project are not kept
         if record.reason in ('outside project', 'outside root', 'unsaved', 'untracked contents'):
             return None
         self._parent.messages.append(record)
@@ -129,15 +167,26 @@ class Consumer(Node):
             server: Server,
             record: Message,
     ) -> None:
+        """Record a JupyterGIS message as an event, or skip it with a reason."""
         data = record.data
-        if not isinstance(data.get('verb'), str) or not isinstance(data.get('object'), dict):
+        if (
+            not isinstance(data.get('verb'), str)
+            or not isinstance(data.get('object'), dict)
+        ):
             raise TypeError('Expected a verb and object')
         obj = data['object']
         document_path = obj['document_path']
-        if document_path is not None and not isinstance(document_path, str):
+        if (
+            document_path is not None
+            and not isinstance(document_path, str)
+        ):
             raise ValueError('Expected a document path or null')
-        if 'subject' in data and not isinstance(data['subject'], str):
+        if (
+            'subject' in data
+            and not isinstance(data['subject'], str)
+        ):
             raise ValueError('Expected a subject string')
+        # resolves the tracked asset and resource links
         found = self.resolve(server, data)
         record.src_path = found.src_path
         if found.reason is not None:
@@ -148,12 +197,19 @@ class Consumer(Node):
         stream = data.get('stream')
         seq = data.get('seq')
         delivery = None
-        if isinstance(stream, str) and stream and type(seq) is int and seq >= 0:
+        if (
+            isinstance(stream, str)
+            and stream
+            and isinstance(seq, int)
+            and seq >= 0
+        ):
             delivery = (server.json.url, stream, seq)
+            # checks for delivery duplicates
             if delivery in self.deliveries:
                 record.outcome = 'skipped'
                 record.reason = 'duplicate delivery'
                 return
+        # instantiates jupyter event
         event_cls = JupyterEvent.registry.get(record.schema_id, JupyterEvent)
         event = event_cls(
             schema_id=record.schema_id,
@@ -167,9 +223,12 @@ class Consumer(Node):
         # trail: focus - activation and deactivation are recorded without save confirmation.
         # trail-todo: delivery - add burst and save handling for non-focus events separately.
         event.apply(self._trail)
+        # record the message
         record.event = event.id
         record.outcome = 'recorded'
+        # update server counter
         server.counts.recorded += 1
+        # update delivery history
         if delivery is not None:
             self.deliveries[delivery] = None
             while len(self.deliveries) > self.delivery_limit:
@@ -180,10 +239,16 @@ class Consumer(Node):
             server: Server,
             data: dict[str, Any],
     ) -> Map:
+        """
+        Find the map a JupyterGIS message is about. Map.reason says why a map cannot be used.
+        """
         trail = self._trail
         document_path = data['object']['document_path']
         # trail: focus - an unsaved map has no project association, even on a home-root server.
-        if not document_path or PurePosixPath(document_path).name == 'unsaved_project':
+        if (
+            not document_path
+            or PurePosixPath(document_path).name == 'unsaved_project'
+        ):
             out = Map(reason='unsaved')
             return out
         path = server.locate(document_path)
@@ -192,14 +257,19 @@ class Consumer(Node):
             return out
         subject = data.get('subject')
         key = (server, subject)
+        # the subject's asset wins over a path that may be stale
         asset = self.subjects.get(key)
         # trail-todo: document-identity - replace subject links when room IDs are available.
-        if asset is not None and trail.assets.id2entry.get(asset.id) is not asset:
+        if (
+            asset is not None
+            and trail.assets.id2entry.get(asset.id) is not asset
+        ):
             out = Map(path=path, reason='offtrailed')
             return out
         if asset is not None:
             path = asset.path
         else:
+            # the file may have been renamed
             if not path.exists():
                 renamed = server.renamed(document_path)
                 path = server.locate(renamed)
@@ -210,20 +280,30 @@ class Consumer(Node):
         if (
             path in trail.entries.untracked
             or trail.entries.is_metadata(path)
-            or (asset is None and trail.offtrail.ignores(path))
+            or (
+                asset is None
+                and trail.offtrail.ignores(path)
+            )
         ):
             out = Map(path=path, reason='offtrailed')
             return out
-        if asset is None and not self._parent._parent.is_inside(path.parent):
+        if (
+            asset is None
+            and not self._parent._parent.is_inside(path.parent)
+        ):
             out = Map(path=path, reason='outside project')
             return out
         if not path.is_file():
             out = Map(path=path, reason='file missing')
             return out
         if asset is None:
+            # a new map taken by ontrail is tracked before its event
             trail.assets.scan(path)
             asset = trail.assets.get(path)
-        if asset is not None and subject:
+        if (
+            asset is not None
+            and subject
+        ):
             self.subjects[key] = asset
         out = Map(asset=asset, path=path)
         return out
@@ -234,6 +314,10 @@ class Consumer(Node):
             server: Server,
             event: JupyterEvent,
     ) -> None:
+        """
+        Set the data file a layer or source event reads. It is stored because the server may be gone
+        on replay.
+        """
         if isinstance(event, LayerEvent):
             found = self.resource(server, event.source)
             event.resource_path = found.path
@@ -251,6 +335,7 @@ class Consumer(Node):
             server: Server,
             source: Source | None,
     ) -> Resource:
+        """Find the data file a source reads."""
         path = self.locate_source(server, source)
         if path is None:
             out = Resource()
@@ -272,6 +357,7 @@ class Consumer(Node):
             server: Server,
             source: Source | None,
     ) -> Path | None:
+        """The local path of the file a source reads, or None."""
         if (
             source is None
             or not source.resolved_path
@@ -291,6 +377,10 @@ class Consumer(Node):
             server: Server,
             record: Message,
     ) -> None:
+        """
+        Read a contents service message. Renames are remembered and saves join a run. Anything else
+        is skipped.
+        """
         data = record.data
         action = data.get('action')
         document_path = data.get('path')
@@ -303,7 +393,10 @@ class Consumer(Node):
             return
         if action == 'rename':
             previous = data.get('source_path')
-            if not isinstance(previous, str) or server.locate(previous) is None:
+            if (
+                not isinstance(previous, str)
+                or server.locate(previous) is None
+            ):
                 raise ValueError('Expected a rename source path')
             server.renames[previous] = document_path
             record.outcome = 'used'
@@ -312,7 +405,10 @@ class Consumer(Node):
             record.reason = 'untracked contents'
         asset = self._trail.assets.get(path)
         if asset is None:
-            if record.outcome == 'used' and self._parent._parent.is_inside(path.parent):
+            if (
+                record.outcome == 'used'
+                and self._parent._parent.is_inside(path.parent)
+            ):
                 record.src_path = str(path)
                 return
             record.reason = 'untracked contents'
@@ -327,6 +423,7 @@ class Consumer(Node):
             record: Message,
             asset: Asset,
     ) -> None:
+        """Add a save to the open run of a tracked file. A long gap starts a new run."""
         at = record.timestamp.timestamp()
         run = self.runs.get(asset.path)
         if (
@@ -362,6 +459,7 @@ class Consumer(Node):
         record.reason = ''
 
     def close_run(self, path: Path) -> ContentsServiceV1Event | None:
+        """Log the open run of a file as one event."""
         run = self.runs.pop(path, None)
         if run is None:
             return None
@@ -380,6 +478,7 @@ class Consumer(Node):
         return event
 
     def close_runs(self, before: float | None = None) -> None:
+        """Close the open runs. With a time, only the runs idle since then."""
         due = [
             path
             for path, run in self.runs.items()
@@ -391,6 +490,9 @@ class Consumer(Node):
 
     # trail: saves - a file session that a save explains is folded into the save's run.
     def claim(self, event: FileAccessEvent) -> bool:
+        """
+        True if a run of saves explains a file session. The run then counts it and it is not logged.
+        """
         if event.event_type not in ('modified', 'opened'):
             return False
         run = self.runs.get(Path(event.src_path))

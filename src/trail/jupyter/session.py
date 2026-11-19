@@ -19,36 +19,52 @@ if TYPE_CHECKING:
 
 
 class JupyterSession(Session):
+    """One run of Trail's connections to Jupyter servers."""
+
     _parent: Jupyter
+    # seconds between looks for servers and kernels
     interval = 2.0
+    # the discovery task while the run is active
     task: asyncio.Task[None] | None = None
 
     @cached_property
     def servers(self) -> Servers:
+        """The Jupyter servers of the run."""
         out = Servers(self)
         return out
 
     @cached_property
     def consumer(self) -> Consumer:
+        """Turns the messages of the feeds into events."""
         out = Consumer(self)
         return out
 
     @cached_property
     def kernels(self) -> Kernels:
+        """Follows the kernels of the notebooks."""
         out = Kernels(self)
         return out
 
     @cached_property
     def messages(self) -> Messages:
+        """The latest messages received."""
         out = Messages(self)
         return out
 
     @property
     def is_active(self) -> bool:
-        out = bool(self) and self.task is not None and not self.task.done()
+        """Whether the discovery task is alive."""
+        out = (
+            bool(self)
+            and self.task is not None
+            and not self.task.done()
+        )
         return out
 
     def start(self) -> bool:
+        """
+        Start the run. Returns False if no loop is running or another process holds the lock.
+        """
         if self.is_active:
             return True
         try:
@@ -70,6 +86,9 @@ class JupyterSession(Session):
         return True
 
     async def run(self) -> None:
+        """
+        Look for servers and kernels at each interval, and close idle runs of saves.
+        """
         try:
             while True:
                 await asyncio.sleep(self.interval)
@@ -81,6 +100,7 @@ class JupyterSession(Session):
                 self.close()
 
     def close(self) -> None:
+        """End the run without waiting."""
         if not self:
             return
         self.is_started = False
@@ -107,6 +127,7 @@ class JupyterSession(Session):
             self._trail.lock.release(self)
 
     def close_runs(self) -> None:
+        """Log every open run of saves."""
         # the file sessions of the last saves are offered to their runs before the runs are logged
         watchdog = self._trail.watchdog.session
         if watchdog:
@@ -115,6 +136,7 @@ class JupyterSession(Session):
         self.consumer.close_runs()
 
     async def stop(self) -> None:
+        """End the run and wait for its tasks."""
         if not self:
             return
         tasks = [
@@ -123,7 +145,10 @@ class JupyterSession(Session):
             if server.task is not None
             and server.task.get_loop() is asyncio.get_running_loop()
         ]
-        if self.task is not None and self.task.get_loop() is asyncio.get_running_loop():
+        if (
+            self.task is not None
+            and self.task.get_loop() is asyncio.get_running_loop()
+        ):
             tasks.append(self.task)
         self.close()
         await asyncio.gather(*tasks, return_exceptions=True)
