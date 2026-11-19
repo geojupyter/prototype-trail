@@ -283,7 +283,7 @@ Changed files:
 - `tests/jupyter/__init__.py`, `conftest.py`, `test_events.py`, `test_consumer.py`, `test_servers.py`,
   `test_subscription.py`, `test_lock.py`: event, resolution, focus, transport, discovery and lock tests.
 - `tests/jupyter/schemas/{document,layer,viewport,contents_service}_v1.yaml`: schema snapshots.
-- `tests/jupyter/fixtures/focus.jsonl`: ten messages captured from the actual server subscription.
+- `tests/jupyter/fixtures/focus.json`: ten messages captured from the actual server subscription.
 - This plan: implementation status and validation.
 
 Validation: **287 tests passed**. The suite reports one recorder-lock warning when an existing

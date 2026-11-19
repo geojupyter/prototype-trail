@@ -1,6 +1,6 @@
 # Event coverage summary
 
-Each new event in two lines: what happened, then the record with only the fields that matter. Fields and values are as the console prints them, from the runs of 12 November 2026. [11-12-2-event-coverage.md](11-12-2-event-coverage.md) has the full records.
+Each new event in two lines: what happened, then the record with only the fields that matter. Fields and values are as the console prints them, from the runs of 12 November 2026. [11-12-2-event-coverage.md](../../scratch/11-12-2-event-coverage.md) has the full records.
 
 ## Notebooks
 
